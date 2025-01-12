@@ -1,25 +1,18 @@
 use oxc_ast::{
-    ast::{
-        BindingPatternKind, ExportDefaultDeclarationKind, Expression, ModuleDeclaration, Statement,
-    },
+    ast::{BindingPatternKind, ExportDefaultDeclarationKind, Expression, Statement},
     AstKind,
 };
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::Error,
-};
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::Span;
 
 use crate::{ast_util::get_declaration_of_variable, context::LintContext, rule::Rule};
 
-#[derive(Debug, Error, Diagnostic)]
-#[error("eslint-plugin-next(no-async-client-component): Prevent client components from being async functions.")]
-#[diagnostic(
-    severity(warning),
-    help("See: https://nextjs.org/docs/messages/no-async-client-component")
-)]
-struct NoAsyncClientComponentDiagnostic(#[label] pub Span);
+fn no_async_client_component_diagnostic(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("Prevent client components from being async functions.")
+        .with_help("See: https://nextjs.org/docs/messages/no-async-client-component")
+        .with_label(span)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct NoAsyncClientComponent;
@@ -35,25 +28,20 @@ declare_oxc_lint!(
     /// ```javascript
     /// ```
     NoAsyncClientComponent,
+    nextjs,
     correctness
 );
 
 impl Rule for NoAsyncClientComponent {
     fn run_once(&self, ctx: &LintContext) {
-        let Some(root) = ctx.nodes().iter().next() else { return };
-        let AstKind::Program(program) = root.kind() else { return };
+        let Some(root) = ctx.nodes().root_node() else {
+            return;
+        };
+        let AstKind::Program(program) = root.kind() else { unreachable!() };
 
-        if program
-            .directives
-            .iter()
-            .any(|directive| directive.expression.value.as_str() == "use client")
-        {
+        if program.directives.iter().any(|directive| directive.directive.as_str() == "use client") {
             for node in &program.body {
-                let Statement::ModuleDeclaration(mod_decl) = &node else {
-                    continue;
-                };
-                let ModuleDeclaration::ExportDefaultDeclaration(export_default_decl) = &**mod_decl
-                else {
+                let Statement::ExportDefaultDeclaration(export_default_decl) = &node else {
                     continue;
                 };
 
@@ -67,7 +55,7 @@ impl Rule for NoAsyncClientComponent {
                             .as_ref()
                             .is_some_and(|v| v.name.chars().next().unwrap().is_uppercase())
                     {
-                        ctx.diagnostic(NoAsyncClientComponentDiagnostic(
+                        ctx.diagnostic(no_async_client_component_diagnostic(
                             func_decl.id.as_ref().unwrap().span,
                         ));
                     }
@@ -75,9 +63,8 @@ impl Rule for NoAsyncClientComponent {
                 }
 
                 // async function MyComponent() {...}; export default MyComponent;
-                if let ExportDefaultDeclarationKind::Expression(Expression::Identifier(
-                    export_default_id,
-                )) = &export_default_decl.declaration
+                if let ExportDefaultDeclarationKind::Identifier(export_default_id) =
+                    &export_default_decl.declaration
                 {
                     let Some(decl) = get_declaration_of_variable(export_default_id, ctx) else {
                         continue;
@@ -91,7 +78,7 @@ impl Rule for NoAsyncClientComponent {
                                 // `func.id.name` MUST be > 0 chars
                                 .is_some_and(|v| v.name.chars().next().unwrap().is_uppercase())
                         {
-                            ctx.diagnostic(NoAsyncClientComponentDiagnostic(
+                            ctx.diagnostic(no_async_client_component_diagnostic(
                                 func.id.as_ref().unwrap().span,
                             ));
                         }
@@ -103,11 +90,11 @@ impl Rule for NoAsyncClientComponent {
                         {
                             // `binding_ident.name` MUST be > 0 chars
                             if binding_ident.name.chars().next().unwrap().is_uppercase() {
-                                if let Some(Expression::ArrowExpression(arrow_expr)) =
+                                if let Some(Expression::ArrowFunctionExpression(arrow_expr)) =
                                     &var_declarator.init
                                 {
                                     if arrow_expr.r#async {
-                                        ctx.diagnostic(NoAsyncClientComponentDiagnostic(
+                                        ctx.diagnostic(no_async_client_component_diagnostic(
                                             binding_ident.span,
                                         ));
                                     }
@@ -209,7 +196,7 @@ fn test() {
 			      "#,
     ];
 
-    Tester::new_without_config(NoAsyncClientComponent::NAME, pass, fail)
+    Tester::new(NoAsyncClientComponent::NAME, NoAsyncClientComponent::PLUGIN, pass, fail)
         .with_nextjs_plugin(true)
         .test_and_snapshot();
 }

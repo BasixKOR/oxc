@@ -1,29 +1,25 @@
+#![allow(unused, clippy::unused_self)]
 //! Prettier
 //!
 //! A port of <https://github.com/prettier/prettier>
 
-#![allow(clippy::wildcard_imports)]
-
 mod binaryish;
 mod comments;
-mod doc;
 mod format;
+mod ir;
 mod macros;
 mod needs_parens;
 mod options;
 mod printer;
 mod utils;
 
-use std::{iter::Peekable, vec};
-
-use oxc_allocator::Allocator;
-use oxc_ast::{ast::Program, AstKind, CommentKind, Trivias};
+use oxc_allocator::{Allocator, Vec};
+use oxc_ast::{ast::Program, AstKind};
 use oxc_span::Span;
 use oxc_syntax::identifier::is_line_terminator;
 
-use crate::{doc::Doc, doc::DocBuilder, format::Format, printer::Printer};
-
 pub use crate::options::{ArrowParens, EndOfLine, PrettierOptions, QuoteProps, TrailingComma};
+use crate::{format::Format, ir::Doc, printer::Printer};
 
 type GroupId = u32;
 #[derive(Default)]
@@ -51,45 +47,31 @@ pub struct Prettier<'a> {
 
     options: PrettierOptions,
 
-    /// A stack of comments that will be carefully placed in the right places.
-    trivias: Peekable<vec::IntoIter<(u32, u32, CommentKind)>>,
-
     /// The stack of AST Nodes
-    /// See <https://github.com/prettier/prettier/blob/main/src/common/ast-path.js>
-    nodes: Vec<AstKind<'a>>,
+    /// See <https://github.com/prettier/prettier/blob/3.3.3/src/common/ast-path.js>
+    stack: Vec<'a, AstKind<'a>>,
 
     group_id_builder: GroupIdBuilder,
     args: PrettierArgs,
 }
 
-impl<'a> DocBuilder<'a> for Prettier<'a> {
-    #[inline]
-    fn allocator(&self) -> &'a Allocator {
-        self.allocator
-    }
-}
-
 impl<'a> Prettier<'a> {
-    pub fn new(
-        allocator: &'a Allocator,
-        source_text: &'a str,
-        trivias: Trivias,
-        options: PrettierOptions,
-    ) -> Self {
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn new(allocator: &'a Allocator, options: PrettierOptions) -> Self {
         Self {
             allocator,
-            source_text,
+            source_text: "",
             options,
-            trivias: trivias.comments.into_iter().peekable(),
-            nodes: vec![],
+            stack: Vec::new_in(allocator),
             group_id_builder: GroupIdBuilder::default(),
             args: PrettierArgs::default(),
         }
     }
 
-    pub fn build(mut self, program: &Program<'a>) -> String {
-        let doc = program.format(&mut self);
-        Printer::new(doc, self.source_text, self.options, self.allocator).build()
+    pub fn build(&mut self, program: &Program<'a>) -> String {
+        self.source_text = program.source_text;
+        let doc = program.format(self);
+        Printer::new(doc, program.source_text, self.options, self.allocator).build()
     }
 
     pub fn doc(mut self, program: &Program<'a>) -> Doc<'a> {
@@ -97,30 +79,30 @@ impl<'a> Prettier<'a> {
     }
 
     fn enter_node(&mut self, kind: AstKind<'a>) {
-        self.nodes.push(kind);
+        self.stack.push(kind);
     }
 
     fn leave_node(&mut self) {
-        self.nodes.pop();
+        self.stack.pop();
     }
 
     fn current_kind(&self) -> AstKind<'a> {
-        self.nodes[self.nodes.len() - 1]
+        self.stack[self.stack.len() - 1]
     }
 
     fn parent_kind(&self) -> AstKind<'a> {
-        self.nodes[self.nodes.len() - 2]
+        self.stack[self.stack.len() - 2]
     }
 
     fn parent_parent_kind(&self) -> Option<AstKind<'a>> {
-        let len = self.nodes.len();
-        (len >= 3).then(|| self.nodes[len - 3])
+        let len = self.stack.len();
+        (len >= 3).then(|| self.stack[len - 3])
     }
 
     #[allow(unused)]
     fn nth_parent_kind(&self, n: usize) -> Option<AstKind<'a>> {
-        let len = self.nodes.len();
-        (len > n).then(|| self.nodes[len - n - 1])
+        let len = self.stack.len();
+        (len > n).then(|| self.stack[len - n - 1])
     }
 
     /// A hack for erasing the lifetime requirement.
@@ -129,18 +111,18 @@ impl<'a> Prettier<'a> {
         // SAFETY:
         // This should be safe as long as `src` is an reference from the allocator.
         // But honestly, I'm not really sure if this is safe.
+
         unsafe { std::mem::transmute(t) }
     }
 
     pub fn semi(&self) -> Option<Doc<'a>> {
-        self.options.semi.then(|| Doc::Str(";"))
+        self.options.semi.then_some(Doc::Str(";"))
     }
 
     pub fn should_print_es5_comma(&self) -> bool {
         self.should_print_comma_impl(false)
     }
 
-    #[allow(unused)]
     fn should_print_all_comma(&self) -> bool {
         self.should_print_comma_impl(true)
     }
@@ -160,7 +142,7 @@ impl<'a> Prettier<'a> {
         while idx != old_idx {
             old_idx = idx;
             idx = self.skip_to_line_end(idx);
-            // idx = self.skip_inline_comment(idx);
+            idx = self.skip_inline_comment(idx);
             idx = self.skip_spaces(idx, /* backwards */ false);
         }
         idx = self.skip_trailing_comment(idx);
@@ -180,6 +162,12 @@ impl<'a> Prettier<'a> {
             return Some(start_index);
         }
         self.skip_everything_but_new_line(Some(start_index), /* backwards */ false)
+    }
+
+    #[allow(clippy::unused_self)]
+    fn skip_inline_comment(&self, start_index: Option<u32>) -> Option<u32> {
+        let start_index = start_index?;
+        Some(start_index)
     }
 
     fn skip_to_line_end(&self, start_index: Option<u32>) -> Option<u32> {

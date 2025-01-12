@@ -1,19 +1,19 @@
-use oxc_ast::{ast::Expression, AstKind};
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::Error,
+use oxc_ast::{
+    ast::{match_member_expression, Expression},
+    AstKind,
 };
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::Span;
+use phf::phf_set;
 
 use crate::{ast_util::is_method_call, context::LintContext, rule::Rule, AstNode};
 
-use phf::phf_set;
-
-#[derive(Debug, Error, Diagnostic)]
-#[error("eslint-plugin-unicorn(no-array-for-each): Do not use `Array#forEach`")]
-#[diagnostic(severity(warning), help("Replace it with a for` loop. For loop is faster, more readable, and you can use `break` or `return` to exit early."))]
-struct NoArrayForEachDiagnostic(#[label] pub Span);
+fn no_array_for_each_diagnostic(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("Do not use `Array#forEach`")
+        .with_help("Replace it with a for` loop. For loop is faster, more readable, and you can use `break` or `return` to exit early.")
+        .with_label(span)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct NoArrayForEach;
@@ -34,17 +34,22 @@ declare_oxc_lint!(
     /// Additionally, using `for…of` has great benefits if you are using TypeScript, because it does not cause a function boundary to be crossed. This means that type-narrowing earlier on in the current scope will work properly while inside of the loop (without having to re-type-narrow). Furthermore, any mutated variables inside of the loop will picked up on for the purposes of determining if a variable is being used.
     ///
     /// ### Example
+    ///
+    /// Examples of **incorrect** code for this rule:
     /// ```javascript
-    /// // Bad
     /// const foo = [1, 2, 3];
     /// foo.forEach((element) => { /* ... */ });
+    /// ```
     ///
-    /// // Good
+    /// Examples of **correct** code for this rule:
+    /// ```javascript
     /// const foo = [1, 2, 3];
     /// for (const element of foo) { /* ... */ }
     /// ```
     NoArrayForEach,
+    unicorn,
     restriction,
+    pending
 );
 
 impl Rule for NoArrayForEach {
@@ -72,8 +77,8 @@ impl Rule for NoArrayForEach {
                         return;
                     }
                 }
-                Expression::MemberExpression(v) => {
-                    if let Some(name) = v.static_property_name() {
+                match_member_expression!(Expression) => {
+                    if let Some(name) = object.to_member_expression().static_property_name() {
                         if IGNORED_OBJECTS.contains(name) {
                             return;
                         }
@@ -86,7 +91,7 @@ impl Rule for NoArrayForEach {
                 return;
             };
 
-            ctx.diagnostic(NoArrayForEachDiagnostic(span));
+            ctx.diagnostic(no_array_for_each_diagnostic(span));
         }
     }
 }
@@ -124,5 +129,5 @@ fn test() {
         r"return foo.forEach(element => {bar(element)});",
     ];
 
-    Tester::new_without_config(NoArrayForEach::NAME, pass, fail).test_and_snapshot();
+    Tester::new(NoArrayForEach::NAME, NoArrayForEach::PLUGIN, pass, fail).test_and_snapshot();
 }

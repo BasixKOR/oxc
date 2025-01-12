@@ -1,38 +1,26 @@
 use oxc_ast::{
-    ast::{
-        Expression, JSXAttributeItem, JSXAttributeValue, JSXChild, JSXElement, JSXElementName,
-        JSXExpression,
-    },
+    ast::{JSXAttributeItem, JSXChild, JSXElement},
     AstKind,
 };
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::Error,
-};
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::Span;
 
-use oxc_allocator::Vec;
-
 use crate::{
     context::LintContext,
+    fixer::{Fix, RuleFix},
     rule::Rule,
-    utils::{get_prop_value, has_jsx_prop_lowercase},
+    utils::{
+        get_element_type, has_jsx_prop_ignore_case, is_hidden_from_screen_reader,
+        object_has_accessible_child,
+    },
     AstNode,
 };
 
-#[derive(Debug, Error, Diagnostic)]
-enum AnchorHasContentDiagnostic {
-    #[error("eslint-plugin-jsx-a11y(anchor-has-content): Missing accessible content when using `a` elements.")]
-    #[diagnostic(
-        severity(warning),
-        help("Provide screen reader accessible content when using `a` elements.")
-    )]
-    MissingContent(#[label] Span),
-
-    #[error("eslint-plugin-jsx-a11y(anchor-has-content): Missing accessible content when using `a` elements.")]
-    #[diagnostic(severity(warning), help("Remove the `aria-hidden` attribute to allow the anchor element and its content visible to assistive technologies."))]
-    RemoveAriaHidden(#[label] Span),
+fn missing_content(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("Missing accessible content when using `a` elements.")
+        .with_help("Provide screen reader accessible content when using `a` elements.")
+        .with_label(span)
 }
 
 #[derive(Debug, Default, Clone)]
@@ -69,92 +57,66 @@ declare_oxc_lint!(
     /// ```
     ///
     AnchorHasContent,
-    correctness
+    jsx_a11y,
+    correctness,
+    conditional_suggestion
 );
 
 impl Rule for AnchorHasContent {
     fn run<'a>(&self, node: &AstNode<'a>, ctx: &LintContext<'a>) {
         if let AstKind::JSXElement(jsx_el) = node.kind() {
-            let JSXElementName::Identifier(iden) = &jsx_el.opening_element.name else { return };
-            let name = iden.name.as_str();
+            let name = get_element_type(ctx, &jsx_el.opening_element);
+
             if name == "a" {
-                // check self attr
-                if has_jsx_prop_lowercase(&jsx_el.opening_element, "aria-hidden").is_some() {
-                    ctx.diagnostic(AnchorHasContentDiagnostic::RemoveAriaHidden(jsx_el.span));
+                if is_hidden_from_screen_reader(ctx, &jsx_el.opening_element) {
                     return;
                 }
 
-                // check if self attr has title/aria-label
-                if (has_jsx_prop_lowercase(&jsx_el.opening_element, "title").is_some()
-                    || has_jsx_prop_lowercase(&jsx_el.opening_element, "aria-label").is_some()
-                    || has_jsx_prop_lowercase(&jsx_el.opening_element, "children").is_some()
-                    || has_jsx_prop_lowercase(&jsx_el.opening_element, "dangerouslysetinnerhtml")
-                        .is_some())
-                    && match_valid_prop(&jsx_el.opening_element.attributes)
-                {
-                    // pass
+                if object_has_accessible_child(ctx, jsx_el) {
                     return;
                 }
 
-                // check content accessible
-                check_has_accessible_child(jsx_el, ctx);
-            }
-        }
+                for attr in ["title", "aria-label"] {
+                    if has_jsx_prop_ignore_case(&jsx_el.opening_element, attr).is_some() {
+                        return;
+                    };
+                }
 
-        // custom component
-    }
-}
-
-fn match_valid_prop(attr_items: &Vec<JSXAttributeItem>) -> bool {
-    attr_items
-        .into_iter()
-        .any(|attr| matches!(get_prop_value(attr), Some(JSXAttributeValue::ExpressionContainer(_))))
-}
-
-fn check_has_accessible_child(jsx: &JSXElement, ctx: &LintContext) {
-    let children = &jsx.children;
-    if children.len() == 0 {
-        if let JSXElementName::Identifier(ident) = &jsx.opening_element.name {
-            ctx.diagnostic(AnchorHasContentDiagnostic::MissingContent(ident.span));
-            return;
-        }
-    }
-
-    // If each child is inaccessible, an error is reported
-    let mut diagnostic = AnchorHasContentDiagnostic::MissingContent(jsx.span);
-    let all_not_has_content = children.into_iter().all(|child| match child {
-        JSXChild::Text(text) => {
-            if text.value.trim() == "" {
-                return true;
-            }
-            false
-        }
-        JSXChild::ExpressionContainer(exp) => {
-            if let JSXExpression::Expression(jsexp) = &exp.expression {
-                if let Expression::Identifier(ident) = jsexp {
-                    if ident.name == "undefined" {
-                        return true;
+                let diagnostic = missing_content(jsx_el.span);
+                if jsx_el.children.len() == 1 {
+                    let child = &jsx_el.children[0];
+                    if let JSXChild::Element(child) = child {
+                        ctx.diagnostic_with_suggestion(diagnostic, |_fixer| {
+                            remove_hidden_attributes(child)
+                        });
+                        return;
                     }
-                } else if let Expression::NullLiteral(_) = jsexp {
-                    return true;
                 }
-            };
-            false
-        }
-        JSXChild::Element(ele) => {
-            let is_hidden = has_jsx_prop_lowercase(&ele.opening_element, "aria-hidden").is_some();
-            if is_hidden {
-                diagnostic = AnchorHasContentDiagnostic::RemoveAriaHidden(jsx.span);
-                return true;
-            }
-            false
-        }
-        _ => false,
-    });
 
-    if all_not_has_content {
-        ctx.diagnostic(diagnostic);
+                ctx.diagnostic(diagnostic);
+            }
+        }
     }
+}
+
+fn remove_hidden_attributes<'a>(element: &JSXElement<'a>) -> RuleFix<'a> {
+    element
+        .opening_element
+        .attributes
+        .iter()
+        .filter_map(JSXAttributeItem::as_attribute)
+        .filter_map(|attr| {
+            attr.name.as_identifier().and_then(|name| {
+                if name.name.eq_ignore_ascii_case("aria-hidden")
+                    || name.name.eq_ignore_ascii_case("hidden")
+                {
+                    Some(Fix::delete(attr.span))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect()
 }
 
 #[test]
@@ -163,31 +125,66 @@ fn test() {
 
     // https://raw.githubusercontent.com/jsx-eslint/eslint-plugin-jsx-a11y/main/__tests__/src/rules/anchor-has-content-test.js
     let pass = vec![
-        (r"<div />;", None),
-        (r"<a>Foo</a>", None),
-        (r"<a><Bar /></a>", None),
-        (r"<a>{foo}</a>", None),
-        (r"<a>{foo.bar}</a>", None),
-        (r#"<a dangerouslySetInnerHTML={{ __html: "foo" }} />"#, None),
-        (r"<a children={children} />", None),
-        // TODO:
-        // { code: '<Link>foo</Link>', settings: { 'jsx-a11y': { components: { Link: 'a' } } }, },
-        (r"<a title={title} />", None),
-        (r"<a aria-label={ariaLabel} />", None),
-        (r"<a title={title} aria-label={ariaLabel} />", None),
-        (r"<a><Bar aria-hidden />Foo</a>", None),
+        (r"<div />;", None, None),
+        (r"<a>Foo</a>", None, None),
+        (r"<a><Bar /></a>", None, None),
+        (r"<a>{foo}</a>", None, None),
+        (r"<a>{foo.bar}</a>", None, None),
+        (r#"<a dangerouslySetInnerHTML={{ __html: "foo" }} />"#, None, None),
+        (r"<a children={children} />", None, None),
+        (r"<Link />", None, None),
+        (
+            r"<Link>foo</Link>",
+            None,
+            Some(
+                serde_json::json!({ "settings": { "jsx-a11y": { "components": { "Link": "a" } } } }),
+            ),
+        ),
+        (r"<a title={title} />", None, None),
+        (r"<a aria-label={ariaLabel} />", None, None),
+        (r"<a title={title} aria-label={ariaLabel} />", None, None),
+        (r#"<a><Bar aria-hidden="false" /></a>"#, None, None),
+        // anchors can be hidden
+        (r"<a aria-hidden>Foo</a>", None, None),
+        (r#"<a aria-hidden="true">Foo</a>"#, None, None),
+        (r"<a hidden>Foo</a>", None, None),
+        (r"<a aria-hidden><span aria-hidden>Foo</span></a>", None, None),
+        (r#"<a hidden="true">Foo</a>"#, None, None),
+        (r#"<a hidden="">Foo</a>"#, None, None),
+        // TODO: should these be failing?
+        (r"<a><div hidden /></a>", None, None),
+        (r"<a><Bar hidden /></a>", None, None),
+        (r#"<a><Bar hidden="" /></a>"#, None, None),
+        (r#"<a><Bar hidden="until-hidden" /></a>"#, None, None),
     ];
 
     let fail = vec![
-        (r"<a />", None),
-        (r"<a><Bar aria-hidden /></a>", None),
-        (r"<a>{undefined}</a>", None),
-        // TODO:
-        // { code: '<Link />', errors: [expectedError], settings: { 'jsx-a11y': { components: { Link: 'a' } } }, },
-        (r"<a aria-hidden ></a>", None),
-        (r"<a>{null}</a>", None),
-        (r"<a title />", None),
+        (r"<a />", None, None),
+        (r"<a><Bar aria-hidden /></a>", None, None),
+        (r#"<a><Bar aria-hidden="true" /></a>"#, None, None),
+        (r#"<a><input type="hidden" /></a>"#, None, None),
+        (r"<a>{undefined}</a>", None, None),
+        (r"<a>{null}</a>", None, None),
+        (
+            r"<Link />",
+            None,
+            Some(
+                serde_json::json!({ "settings": { "jsx-a11y": { "components": { "Link": "a" } } } }),
+            ),
+        ),
     ];
 
-    Tester::new(AnchorHasContent::NAME, pass, fail).test_and_snapshot();
+    let fix = vec![
+        (r"<a><Bar aria-hidden /></a>", "<a><Bar  /></a>"),
+        (r"<a><Bar aria-hidden>Can't see me</Bar></a>", r"<a><Bar >Can't see me</Bar></a>"),
+        (r"<a><Bar aria-hidden={true}>Can't see me</Bar></a>", r"<a><Bar >Can't see me</Bar></a>"),
+        (
+            r#"<a><Bar aria-hidden="true">Can't see me</Bar></a>"#,
+            r"<a><Bar >Can't see me</Bar></a>",
+        ),
+    ];
+
+    Tester::new(AnchorHasContent::NAME, AnchorHasContent::PLUGIN, pass, fail)
+        .expect_fix(fix)
+        .test_and_snapshot();
 }

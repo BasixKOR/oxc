@@ -1,26 +1,36 @@
 //! ECMAScript Minifier
 
+mod ast_passes;
 mod compressor;
-mod mangler;
+mod ctx;
+mod keep_var;
+mod options;
+
+#[cfg(test)]
+mod tester;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
+use oxc_mangler::Mangler;
 
-pub use crate::{
-    compressor::{CompressOptions, Compressor},
-    mangler::ManglerBuilder,
-};
+pub use oxc_mangler::MangleOptions;
+
+pub use crate::{ast_passes::CompressorPass, compressor::Compressor, options::CompressOptions};
 
 #[derive(Debug, Clone, Copy)]
 pub struct MinifierOptions {
-    pub mangle: bool,
+    pub mangle: Option<MangleOptions>,
     pub compress: CompressOptions,
 }
 
 impl Default for MinifierOptions {
     fn default() -> Self {
-        Self { mangle: true, compress: CompressOptions::default() }
+        Self { mangle: Some(MangleOptions::default()), compress: CompressOptions::default() }
     }
+}
+
+pub struct MinifierReturn {
+    pub mangler: Option<Mangler>,
 }
 
 pub struct Minifier {
@@ -32,11 +42,12 @@ impl Minifier {
         Self { options }
     }
 
-    pub fn build<'a>(self, allocator: &'a Allocator, program: &mut Program<'a>) {
+    pub fn build<'a>(self, allocator: &'a Allocator, program: &mut Program<'a>) -> MinifierReturn {
         Compressor::new(allocator, self.options.compress).build(program);
-        // if self.options.mangle {
-        // let mangler = ManglerBuilder.build(program);
-        // printer.with_mangler(mangler);
-        // }
+        let mangler = self
+            .options
+            .mangle
+            .map(|options| Mangler::default().with_options(options).build(program));
+        MinifierReturn { mangler }
     }
 }

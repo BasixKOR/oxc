@@ -1,43 +1,22 @@
 //! Common code for JavaScript Syntax
-
-pub mod assumptions;
+#![warn(missing_docs)]
 pub mod class;
+pub mod es_target;
 pub mod identifier;
+pub mod keyword;
 pub mod module_record;
+pub mod node;
+pub mod number;
 pub mod operator;
 pub mod precedence;
 pub mod reference;
 pub mod scope;
 pub mod symbol;
 pub mod xml_entities;
-
-pub use unicode_id_start;
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub enum NumberBase {
-    Float,
-    Decimal,
-    Binary,
-    Octal,
-    Hex,
-}
-
-impl NumberBase {
-    pub fn is_base_10(&self) -> bool {
-        matches!(self, Self::Float | Self::Decimal)
-    }
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub enum BigintBase {
-    Decimal,
-    Binary,
-    Octal,
-    Hex,
-}
-
-impl BigintBase {
-    pub fn is_base_10(&self) -> bool {
-        self == &Self::Decimal
-    }
+mod generated {
+    mod derive_clone_in;
+    mod derive_content_eq;
+    mod derive_content_hash;
+    #[cfg(feature = "serialize")]
+    mod derive_estree;
 }

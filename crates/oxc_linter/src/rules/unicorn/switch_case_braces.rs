@@ -1,21 +1,17 @@
 use oxc_ast::{ast::Statement, AstKind};
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::Error,
-};
-use oxc_formatter::Gen;
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::{GetSpan, Span};
 
-use crate::{context::LintContext, fixer::Fix, rule::Rule, AstNode};
+use crate::{context::LintContext, rule::Rule, AstNode};
 
-#[derive(Debug, Error, Diagnostic)]
-#[error("eslint-plugin-unicorn(switch-case-braces):  Empty switch case shouldn't have braces and not-empty case should have braces around it.")]
-#[diagnostic(
-    severity(warning),
-    help("There is less visual clutter for empty cases and proper scope for non-empty cases.")
-)]
-struct SwitchCaseBracesDiagnostic(#[label] pub Span);
+fn switch_case_braces_diagnostic(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn(
+        " Empty switch case shouldn't have braces and not-empty case should have braces around it.",
+    )
+    .with_help("There is less visual clutter for empty cases and proper scope for non-empty cases.")
+    .with_label(span)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct SwitchCaseBraces;
@@ -39,12 +35,16 @@ declare_oxc_lint!(
     /// }
     /// ```
     SwitchCaseBraces,
-    style
+    unicorn,
+    style,
+    fix
 );
 
 impl Rule for SwitchCaseBraces {
     fn run<'a>(&self, node: &AstNode<'a>, ctx: &LintContext<'a>) {
-        let AstKind::SwitchStatement(switch) = node.kind() else { return };
+        let AstKind::SwitchStatement(switch) = node.kind() else {
+            return;
+        };
 
         if switch.cases.is_empty() {
             return;
@@ -56,8 +56,8 @@ impl Rule for SwitchCaseBraces {
                     Statement::BlockStatement(case_block) => {
                         if case_block.body.is_empty() {
                             ctx.diagnostic_with_fix(
-                                SwitchCaseBracesDiagnostic(case_block.span),
-                                || Fix::new("", case_block.span),
+                                switch_case_braces_diagnostic(case_block.span),
+                                |fixer| fixer.delete_range(case_block.span),
                             );
                         }
                     }
@@ -70,33 +70,39 @@ impl Rule for SwitchCaseBraces {
                             return;
                         };
 
-                        let case_body_span = Span {
-                            start: first_statement.span().start,
-                            end: last_statement.span().end,
-                        };
+                        let case_body_span =
+                            Span::new(first_statement.span().start, last_statement.span().end);
 
-                        ctx.diagnostic_with_fix(SwitchCaseBracesDiagnostic(case_body_span), || {
-                            let modified_code = {
-                                let mut formatter = ctx.formatter();
+                        ctx.diagnostic_with_fix(
+                            switch_case_braces_diagnostic(case_body_span),
+                            |fixer| {
+                                let modified_code = {
+                                    let mut formatter = fixer.codegen();
 
-                                if let Some(case_test) = &case.test {
-                                    formatter.print_str(b"case ");
-                                    case_test.gen(&mut formatter);
-                                } else {
-                                    formatter.print_str(b"default");
-                                }
+                                    if let Some(case_test) = &case.test {
+                                        formatter.print_str("case ");
+                                        formatter.print_expression(case_test);
+                                    } else {
+                                        formatter.print_str("default");
+                                    }
 
-                                formatter.print_colon();
-                                formatter.print_space();
-                                formatter.print(b'{');
-                                case.consequent.iter().for_each(|x| x.gen(&mut formatter));
-                                formatter.print(b'}');
+                                    formatter.print_ascii_byte(b':');
+                                    formatter.print_ascii_byte(b' ');
+                                    formatter.print_ascii_byte(b'{');
 
-                                formatter.into_code()
-                            };
+                                    let source_text = ctx.source_text();
+                                    for x in &case.consequent {
+                                        formatter.print_str(x.span().source_text(source_text));
+                                    }
 
-                            Fix::new(modified_code, case.span)
-                        });
+                                    formatter.print_ascii_byte(b'}');
+
+                                    formatter.into_source_text()
+                                };
+
+                                fixer.replace(case.span, modified_code)
+                            },
+                        );
 
                         // After first incorrect consequent we have to break to not repeat the work
                         break;
@@ -121,6 +127,7 @@ fn test() {
     ];
 
     let fail = vec![
+        "switch(s){case'':/]/}",
         "switch(something) { case 1: {} case 2: {console.log('something'); break;}}",
         "switch(something) { case 1: case 2: console.log('something'); break;}",
         "switch(foo) { case 1: {} case 2: {} default: { doSomething(); } }",
@@ -129,7 +136,6 @@ fn test() {
         "switch(foo) { case 1: { doSomething(); } break; /* <-- This should be between braces */ }",
         "switch(foo) { default: label: {} }",
         "switch(something) { case 1: case 2: { console.log('something'); break; } case 3: console.log('something else'); }",
-
     ];
 
     let fix = vec![
@@ -140,17 +146,18 @@ fn test() {
         ),
         (
             "switch(something) { case 1: {} case 2: console.log('something'); break;}",
-            "switch(something) { case 1:  case 2: {console.log(\"something\");\nbreak;\n}}",
+            "switch(something) { case 1:  case 2: {console.log('something');break;}}",
             None,
         ),
         (
             "switch(foo) { default: doSomething(); }",
-            "switch(foo) { default: {doSomething();\n} }",
+            "switch(foo) { default: {doSomething();} }",
             None,
         ),
+        ("switch(s){case'':/]/}", "switch(s){case '': {/]/}}", None),
     ];
 
-    Tester::new_without_config(SwitchCaseBraces::NAME, pass, fail)
+    Tester::new(SwitchCaseBraces::NAME, SwitchCaseBraces::PLUGIN, pass, fail)
         .expect_fix(fix)
         .test_and_snapshot();
 }

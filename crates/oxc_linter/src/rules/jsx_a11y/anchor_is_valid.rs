@@ -1,39 +1,59 @@
+use std::ops::Deref;
+
 use oxc_ast::{
-    ast::{Expression, JSXAttributeItem, JSXAttributeValue, JSXElementName, JSXExpression},
+    ast::{JSXAttributeItem, JSXAttributeValue, JSXExpression},
     AstKind,
 };
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::Error,
-};
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
-use oxc_span::Span;
+use oxc_span::{CompactStr, GetSpan, Span};
+use serde_json::Value;
 
-use crate::{context::LintContext, rule::Rule, utils::has_jsx_prop_lowercase, AstNode};
+use crate::{
+    context::LintContext,
+    rule::Rule,
+    utils::{get_element_type, has_jsx_prop_ignore_case},
+    AstNode,
+};
 
-#[derive(Debug, Error, Diagnostic)]
-enum AnchorIsValidDiagnostic {
-    #[error(
-        "eslint-plugin-jsx-a11y(anchor-is-valid): Missing `href` attribute for the `a` element."
-    )]
-    #[diagnostic(severity(warning), help("Provide an href for the `a` element."))]
-    MissingHrefAttribute(#[label] Span),
+fn missing_href_attribute(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("Missing `href` attribute for the `a` element.")
+        .with_help("Provide an `href` for the `a` element.")
+        .with_label(span)
+}
 
-    #[error("eslint-plugin-jsx-a11y(anchor-is-valid): Use an incorrect href for the 'a' element.")]
-    #[diagnostic(severity(warning), help("Provide a correct href for the `a` element."))]
-    IncorrectHref(#[label] Span),
+fn incorrect_href(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("Use of incorrect `href` for the 'a' element.")
+        .with_help("Provide a correct `href` for the `a` element.")
+        .with_label(span)
+}
 
-    #[error("eslint-plugin-jsx-a11y(anchor-is-valid):  The a element has `href` and `onClick`.")]
-    #[diagnostic(severity(warning), help("Use a `button` element instead of an `a` element."))]
-    CantBeAnchor(#[label] Span),
+fn cant_be_anchor(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("The `a` element has `href` and `onClick`.")
+        .with_help("Use a `button` element instead of an `a` element.")
+        .with_label(span)
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct AnchorIsValid;
+pub struct AnchorIsValid(Box<AnchorIsValidConfig>);
+
+#[derive(Debug, Default, Clone)]
+pub struct AnchorIsValidConfig {
+    /// Unique and sorted list of valid hrefs
+    valid_hrefs: Vec<CompactStr>,
+}
+
+impl Deref for AnchorIsValid {
+    type Target = AnchorIsValidConfig;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 declare_oxc_lint!(
     /// ### What it does
-    /// The HTML <a> element, with a valid href attribute, is formally defined as representing a **hyperlink**.
+    /// The HTML `<a>` element, with a valid href attribute, is formally defined as representing a **hyperlink**.
     /// That is, a link between one HTML document and another, or between one location inside an HTML document and another location inside the same document.
     ///
     /// While before it was possible to attach logic to an anchor element, with the advent of JSX libraries,
@@ -48,15 +68,17 @@ declare_oxc_lint!(
     ///
     /// Consider the following:
     ///
-    /// ```javascript
-    /// <a href="javascript:void(0)" onClick={foo}>Perform action</a>
-    /// <a href="#" onClick={foo}>Perform action</a>
-    /// <a onClick={foo}>Perform action</a>
+    /// ```jsx
+    /// <>
+    ///     <a href="javascript:void(0)" onClick={foo}>Perform action</a>
+    ///     <a href="#" onClick={foo}>Perform action</a>
+    ///     <a onClick={foo}>Perform action</a>
+    /// </>
     /// ````
     ///
     /// All these anchor implementations indicate that the element is only used to execute JavaScript code. All the above should be replaced with:
     ///
-    /// ```javascript
+    /// ```jsx
     /// <button onClick={foo}>Perform action</button>
     /// ```
     /// `
@@ -70,127 +92,136 @@ declare_oxc_lint!(
     ///
     /// #### Valid
     ///
-    /// ```javascript
-    /// <a href={`https://www.javascript.com`}>navigate here</a>
-    /// ```
-    ///
-    /// ```javascript
-    /// <a href={somewhere}>navigate here</a>
-    /// ```
-    ///
-    /// ```javascript
-    /// <a {...spread}>navigate here</a>
+    /// ```jsx
+    /// <>
+    ///     <a href={`https://www.javascript.com`}>navigate here</a>
+    ///     <a href={somewhere}>navigate here</a>
+    ///     <a {...spread}>navigate here</a>
+    /// </>
     /// ```
     ///
     /// #### Invalid
     ///
-    /// ```javascript
-    /// <a href={null}>navigate here</a>
-    /// ```
-    /// ```javascript
-    /// <a href={undefined}>navigate here</a>
-    /// ```
-    /// ```javascript
-    /// <a href>navigate here</a>
-    /// ```
-    /// ```javascript
-    /// <a href="javascript:void(0)">navigate here</a>
-    /// ```
-    /// ```javascript
-    /// <a href="https://example.com" onClick={something}>navigate here</a>
+    /// ```jsx
+    /// <>
+    ///     <a href={null}>navigate here</a>
+    ///     <a href={undefined}>navigate here</a>
+    ///     <a href>navigate here</a>
+    ///     <a href="javascript:void(0)">navigate here</a>
+    ///     <a href="https://example.com" onClick={something}>navigate here</a>
+    /// </>
     /// ```
     ///
     /// ### Reference
     ///
     /// - [WCAG 2.1.1](https://www.w3.org/WAI/WCAG21/Understanding/keyboard)
     AnchorIsValid,
+    jsx_a11y,
     correctness
 );
 
 impl Rule for AnchorIsValid {
+    fn from_configuration(value: serde_json::Value) -> Self {
+        let Some(valid_hrefs) = value.get("validHrefs").and_then(Value::as_array) else {
+            return Self::default();
+        };
+        Self(Box::new(valid_hrefs.iter().collect()))
+    }
+
     fn run<'a>(&self, node: &AstNode<'a>, ctx: &LintContext<'a>) {
         if let AstKind::JSXElement(jsx_el) = node.kind() {
-            let JSXElementName::Identifier(ident) = &jsx_el.opening_element.name else { return };
-            let name = ident.name.as_str();
-            if name == "a" {
-                if let Option::Some(herf_attr) =
-                    has_jsx_prop_lowercase(&jsx_el.opening_element, "href")
-                {
-                    // Check if the 'a' element has a correct href attribute
-                    match herf_attr {
-                        JSXAttributeItem::Attribute(attr) => match &attr.value {
-                            Some(value) => {
-                                let is_empty = check_value_is_empty(value);
-                                if is_empty {
-                                    if has_jsx_prop_lowercase(&jsx_el.opening_element, "onclick")
-                                        .is_some()
-                                    {
-                                        ctx.diagnostic(AnchorIsValidDiagnostic::CantBeAnchor(
-                                            ident.span,
-                                        ));
-                                        return;
-                                    }
-                                    ctx.diagnostic(AnchorIsValidDiagnostic::IncorrectHref(
-                                        ident.span,
-                                    ));
-                                    return;
-                                }
-                            }
-                            None => {
-                                ctx.diagnostic(AnchorIsValidDiagnostic::IncorrectHref(ident.span));
-                                return;
-                            }
-                        },
+            let name = get_element_type(ctx, &jsx_el.opening_element);
 
-                        JSXAttributeItem::SpreadAttribute(_) => {
-                            // pass
-                            return;
-                        }
+            if name != "a" {
+                return;
+            };
+            // Don't eagerly get `span` here, to avoid that work unless rule fails
+            let get_span = || jsx_el.opening_element.name.span();
+            if let Some(href_attr) = has_jsx_prop_ignore_case(&jsx_el.opening_element, "href") {
+                let JSXAttributeItem::Attribute(attr) = href_attr else {
+                    return;
+                };
+
+                // Check if the 'a' element has a correct href attribute
+                let Some(value) = attr.value.as_ref() else {
+                    ctx.diagnostic(incorrect_href(get_span()));
+                    return;
+                };
+
+                let is_empty = self.check_value_is_empty_or_invalid(value);
+                if is_empty {
+                    if has_jsx_prop_ignore_case(&jsx_el.opening_element, "onclick").is_some() {
+                        ctx.diagnostic(cant_be_anchor(get_span()));
+                        return;
                     }
+                    ctx.diagnostic(incorrect_href(get_span()));
                     return;
                 }
-                // Exclude '<a {...props} />' case
-                let has_spreed_attr =
-                    jsx_el.opening_element.attributes.iter().any(|attr| match attr {
-                        JSXAttributeItem::SpreadAttribute(_) => true,
-                        JSXAttributeItem::Attribute(_) => false,
-                    });
-
-                if has_spreed_attr {
-                    return;
-                }
-
-                ctx.diagnostic(AnchorIsValidDiagnostic::MissingHrefAttribute(ident.span));
+                return;
             }
+            // Exclude '<a {...props} />' case
+            let has_spread_attr = jsx_el.opening_element.attributes.iter().any(|attr| match attr {
+                JSXAttributeItem::SpreadAttribute(_) => true,
+                JSXAttributeItem::Attribute(_) => false,
+            });
+            if has_spread_attr {
+                return;
+            }
+            ctx.diagnostic(missing_href_attribute(get_span()));
         }
     }
 }
 
-fn check_value_is_empty(value: &JSXAttributeValue) -> bool {
-    match value {
-        JSXAttributeValue::Element(_) => false,
-        JSXAttributeValue::StringLiteral(str_lit) => {
-            str_lit.value.is_empty()
-                || str_lit.value == "#"
-                || str_lit.value == "javascript:void(0)"
-        }
-        JSXAttributeValue::ExpressionContainer(exp) => {
-            if let JSXExpression::Expression(jsexp) = &exp.expression {
-                if let Expression::Identifier(ident) = jsexp {
-                    if ident.name == "undefined" {
-                        return true;
+impl AnchorIsValid {
+    fn check_value_is_empty_or_invalid(&self, value: &JSXAttributeValue) -> bool {
+        match value {
+            JSXAttributeValue::Element(_) => false,
+            JSXAttributeValue::StringLiteral(str_lit) => self.is_invalid_href(&str_lit.value),
+            JSXAttributeValue::ExpressionContainer(exp) => match &exp.expression {
+                JSXExpression::Identifier(ident) => ident.name == "undefined",
+                JSXExpression::NullLiteral(_) => true,
+                JSXExpression::StringLiteral(str_lit) => self.is_invalid_href(&str_lit.value),
+                JSXExpression::TemplateLiteral(temp_lit) => {
+                    if !temp_lit.expressions.is_empty() {
+                        return false;
                     }
-                } else if let Expression::NullLiteral(_) = jsexp {
-                    return true;
-                } else if let Expression::StringLiteral(str_lit) = jsexp {
-                    return str_lit.value.is_empty()
-                        || str_lit.value == "#"
-                        || str_lit.value == "javascript:void(0)";
+
+                    let Some(quasi) = temp_lit.quasi() else {
+                        return false;
+                    };
+                    self.is_invalid_href(&quasi)
                 }
-            };
-            false
+                _ => false,
+            },
+            JSXAttributeValue::Fragment(_) => true,
         }
-        JSXAttributeValue::Fragment(_) => true,
+    }
+}
+
+impl AnchorIsValidConfig {
+    fn new(mut valid_hrefs: Vec<CompactStr>) -> Self {
+        valid_hrefs.sort_unstable();
+        valid_hrefs.dedup();
+        Self { valid_hrefs }
+    }
+
+    fn is_invalid_href(&self, href: &str) -> bool {
+        if self.contains(href) {
+            return false;
+        }
+
+        href.is_empty() || href == "#" || href == "javascript:void(0)"
+    }
+
+    fn contains(&self, href: &str) -> bool {
+        self.valid_hrefs.binary_search_by(|valid_href| valid_href.as_str().cmp(href)).is_ok()
+    }
+}
+
+impl<'v> FromIterator<&'v Value> for AnchorIsValidConfig {
+    fn from_iter<T: IntoIterator<Item = &'v Value>>(iter: T) -> Self {
+        let hrefs = iter.into_iter().filter_map(Value::as_str).map(CompactStr::from).collect();
+        Self::new(hrefs)
     }
 }
 
@@ -212,24 +243,48 @@ fn test() {
 
     // https://raw.githubusercontent.com/jsx-eslint/eslint-plugin-jsx-a11y/main/__tests__/src/rules/anchor-is-valid-test.js
     let pass = vec![
-        (r"<Anchor />", None),
-        (r"<a {...props} />", None),
-        (r"<a href='foo' />", None),
-        (r"<a href={foo} />", None),
-        (r"<a href='/foo' />", None),
-        (r"<a href='https://foo.bar.com' />", None),
-        (r"<div href='foo' />", None),
-        (r"<a href='javascript' />", None),
-        (r"<a href='javascriptFoo' />", None),
-        (r"<a href={`#foo`}/>", None),
-        (r"<a href={'foo'}/>", None),
-        (r"<a href={'javascript'}/>", None),
-        (r"<a href={`#javascript`}/>", None),
-        (r"<a href='#foo' />", None),
-        (r"<a href='#javascript' />", None),
-        (r"<a href='#javascriptFoo' />", None),
-        (r"<UX.Layout>test</UX.Layout>", None),
-        (r"<a href={this} />", None),
+        (r"<Anchor />", None, None),
+        (r"<a {...props} />", None, None),
+        (r"<a href='foo' />", Some(serde_json::json!({ "validHrefs": ["foo"] })), None),
+        (r"<a href={foo} />", None, None),
+        (r"<a href='/foo' />", Some(serde_json::json!({ "validHrefs": ["/foo"] })), None),
+        (
+            r"<a href='https://foo.bar.com' />",
+            Some(serde_json::json!({ "validHrefs": ["https://foo.bar.com"] })),
+            None,
+        ),
+        (r"<div href='foo' />", None, None),
+        (
+            r"<a href='javascript' />",
+            Some(serde_json::json!({ "validHrefs": ["javascript"] })),
+            None,
+        ),
+        (
+            r"<a href='javascriptFoo' />",
+            Some(serde_json::json!({ "validHrefs": ["javascriptFoo"] })),
+            None,
+        ),
+        (r"<a href={`#foo`}/>", None, None),
+        (r"<a href={'foo'}/>", Some(serde_json::json!({ "validHrefs": ["foo"] })), None),
+        (
+            r"<a href={'javascript'}/>",
+            Some(serde_json::json!({ "validHrefs": ["javascript"] })),
+            None,
+        ),
+        (r"<a href={`#javascript`}/>", None, None),
+        (r"<a href='#foo' />", Some(serde_json::json!({ "validHrefs": ["#foo"] })), None),
+        (
+            r"<a href='#javascript' />",
+            Some(serde_json::json!({ "validHrefs": ["#javascript"] })),
+            None,
+        ),
+        (
+            r"<a href='#javascriptFoo' />",
+            Some(serde_json::json!({ "validHrefs": ["#javascriptFoo"] })),
+            None,
+        ),
+        (r"<UX.Layout>test</UX.Layout>", None, None),
+        (r"<a href={this} />", None, None),
         // (r#"<Anchor {...props} />"#, Some(serde_json::json!(components))),
         // (r#"<Anchor href='foo' />"#, Some(serde_json::json!(components))),
         // (r#"<Anchor href={foo} />"#, Some(serde_json::json!(components))),
@@ -248,7 +303,13 @@ fn test() {
         // (r#"<Link href={`#foo`}/>"#, Some(serde_json::json!(components))),
         // (r#"<Link href={'foo'}/>"#, Some(serde_json::json!(components))),
         // (r#"<Link href='#foo' />"#, Some(serde_json::json!(components))),
-        (r"<Link href='#foo' />", None),
+        (
+            r"<Link href='#foo' />",
+            Some(serde_json::json!({ "validHrefs": ["#foo"] })),
+            Some(
+                serde_json::json!({ "settings": { "jsx-a11y": { "components": { "Anchor": "a", "Link": "a" } } } }),
+            ),
+        ),
         // (r#"<a {...props} />"#, Some(serde_json::json!(specialLink))),
         // (r#"<a hrefLeft='foo' />"#, Some(serde_json::json!(specialLink))),
         // (r#"<a hrefLeft={foo} />"#, Some(serde_json::json!(specialLink))),
@@ -284,16 +345,52 @@ fn test() {
         // (r#"<Anchor hrefLeft={'foo'}/>"#, Some(serde_json::json!(componentsAndSpecialLink))),
         // (r#"<Anchor hrefLeft='#foo' />"#, Some(serde_json::json!(componentsAndSpecialLink))),
         // (r#"<UX.Layout>test</UX.Layout>"#, Some(serde_json::json!(componentsAndSpecialLink))),
-        (r"<a {...props} onClick={() => void 0} />", None),
-        (r"<a href='foo' onClick={() => void 0} />", None),
-        (r"<a href={foo} onClick={() => void 0} />", None),
-        (r"<a href='/foo' onClick={() => void 0} />", None),
-        (r"<a href='https://foo.bar.com' onClick={() => void 0} />", None),
-        (r"<div href='foo' onClick={() => void 0} />", None),
-        (r"<a href={`#foo`} onClick={() => void 0} />", None),
-        (r"<a href={'foo'} onClick={() => void 0} />", None),
-        (r"<a href='#foo' onClick={() => void 0} />", None),
-        (r"<a href={this} onClick={() => void 0} />", None),
+        (r"<a {...props} onClick={() => void 0} />", None, None),
+        (
+            r"<a href='foo' onClick={() => void 0} />",
+            Some(serde_json::json!({ "validHrefs": ["foo"] })),
+            None,
+        ),
+        (r"<a href={foo} onClick={() => void 0} />", None, None),
+        (
+            r"<a href='/foo' onClick={() => void 0} />",
+            Some(serde_json::json!({ "validHrefs": ["/foo"] })),
+            None,
+        ),
+        (
+            r"<a href='https://foo.bar.com' onClick={() => void 0} />",
+            Some(serde_json::json!({ "validHrefs": ["https://foo.bar.com"] })),
+            None,
+        ),
+        (r"<div href='foo' onClick={() => void 0} />", None, None),
+        (r"<a href={`#foo`} onClick={() => void 0} />", None, None),
+        (
+            r"<a href={'foo'} onClick={() => void 0} />",
+            Some(serde_json::json!({ "validHrefs": ["foo"] })),
+            None,
+        ),
+        (
+            r"<a href='#foo' onClick={() => void 0} />",
+            Some(serde_json::json!({ "validHrefs": ["#foo"] })),
+            None,
+        ),
+        (r"<a href={this} onClick={() => void 0} />", None, None),
+        (r"<a href='/some/valid/uri'>valid</a>", None, None),
+        (r"<a href={'/some/valid/uri'}>valid</a>", None, None),
+        (r"<a href={`/some/valid/uri`}>valid</a>", None, None),
+        (r"<a href='#top'>Navigate to internal page location</a>", None, None),
+        (r"<a href={'#top'}>Navigate to internal page location</a>", None, None),
+        (r"<a href={`#top`}>Navigate to internal page location</a>", None, None),
+        (r"<a href='https://github.com'>github</a>", None, None),
+        (r"<a href={'https://github.com'}>github</a>", None, None),
+        (r"<a href={`https://github.com`}>github</a>", None, None),
+        (r"<a href='#section'>section</a>", None, None),
+        (r"<a href={'#section'}>section</a>", None, None),
+        (r"<a href={`#section`}>section</a>", None, None),
+        (r"<a href={`${foo}`}>valid</a>", None, None),
+        (r"<a href={`#${foo}`}>valid</a>", None, None),
+        (r"<a href={`#${foo}/bar`}>valid</a>", None, None),
+        (r"<a href={foo + bar}>valid</a>", None, None),
         // (r#"<Anchor {...props} onClick={() => void 0} />"#, Some(serde_json::json!(components))),
         // (r#"<Anchor href='foo' onClick={() => void 0} />"#, Some(serde_json::json!(components))),
         // (r#"<Anchor href={foo} onClick={() => void 0} />"#, Some(serde_json::json!(components))),
@@ -460,18 +557,19 @@ fn test() {
     ];
 
     let fail = vec![
-        (r"<a />", None),
-        (r"<a href={undefined} />", None),
-        (r"<a href={null} />", None),
-        (r"<a href=' />;", None),
-        (r"<a href='#' />", None),
-        (r"<a href={'#'} />", None),
-        (r"<a href='javascript:void(0)' />", None),
-        (r"<a href={'javascript:void(0)'} />", None),
-        (r"<a onClick={() => void 0} />", None),
-        (r"<a href='#' onClick={() => void 0} />", None),
-        (r"<a href='javascript:void(0)' onClick={() => void 0} />", None),
-        (r"<a href={'javascript:void(0)'} onClick={() => void 0} />", None),
+        (r"<a />", None, None),
+        (r"<a href={undefined} />", None, None),
+        (r"<a href={null} />", None, None),
+        (r"<a href=' />;", None, None),
+        (r"<a href='#' />", None, None),
+        (r"<a href={'#'} />", None, None),
+        (r"<a href={`#`} />", None, None),
+        (r"<a href='javascript:void(0)' />", None, None),
+        (r"<a href={'javascript:void(0)'} />", None, None),
+        (r"<a onClick={() => void 0} />", None, None),
+        (r"<a href='#' onClick={() => void 0} />", None, None),
+        (r"<a href='javascript:void(0)' onClick={() => void 0} />", None, None),
+        (r"<a href={'javascript:void(0)'} onClick={() => void 0} />", None, None),
         // (r#"<Link />"#, Some(serde_json::json!(components))),
         // (r#"<Link href={undefined} />"#, Some(serde_json::json!(components))),
         // (r#"<Link href={null} />"#, Some(serde_json::json!(components))),
@@ -505,7 +603,13 @@ fn test() {
         // r#"<Anchor href={'javascript:void(0)'} onClick={() => void 0} />"#,
         // Some(serde_json::json!(components)),
         // ),
-        // (r#"<Link href='#' onClick={() => void 0} />"#, None),
+        (
+            r"<Link href='#' onClick={() => void 0} />",
+            None,
+            Some(
+                serde_json::json!({ "settings": { "jsx-a11y": { "components": { "Anchor": "a", "Link": "a" } } } }),
+            ),
+        ),
         // (r#"<a hrefLeft={undefined} />"#, Some(serde_json::json!(specialLink))),
         // (r#"<a hrefLeft={null} />"#, Some(serde_json::json!(specialLink))),
         // (r#"<a hrefLeft=' />;"#, Some(serde_json::json!(specialLink))),
@@ -665,5 +769,5 @@ fn test() {
         // ),
     ];
 
-    Tester::new(AnchorIsValid::NAME, pass, fail).test_and_snapshot();
+    Tester::new(AnchorIsValid::NAME, AnchorIsValid::PLUGIN, pass, fail).test_and_snapshot();
 }

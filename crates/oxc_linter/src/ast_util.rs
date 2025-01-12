@@ -1,33 +1,24 @@
-use std::hash::{Hash, Hasher};
-
-use oxc_ast::AstKind;
-use oxc_semantic::AstNode;
-use oxc_span::{Atom, GetSpan, Span};
+use oxc_ast::{
+    ast::{BindingIdentifier, *},
+    AstKind,
+};
+use oxc_ecmascript::ToBoolean;
+use oxc_semantic::{AstNode, IsGlobalReference, NodeId, ReferenceId, Semantic, SymbolId};
+use oxc_span::{GetSpan, Span};
 use oxc_syntax::operator::{AssignmentOperator, BinaryOperator, LogicalOperator, UnaryOperator};
-use rustc_hash::FxHasher;
-
-pub fn calculate_hash<T: Hash>(t: &T) -> u64 {
-    let mut hasher = FxHasher::default();
-    t.hash(&mut hasher);
-    hasher.finish()
-}
-#[allow(clippy::wildcard_imports)]
-use oxc_ast::ast::*;
-
-use crate::context::LintContext;
 
 /// Test if an AST node is a boolean value that never changes. Specifically we
 /// test for:
 /// 1. Literal booleans (`true` or `false`)
 /// 2. Unary `!` expressions with a constant value
 /// 3. Constant booleans created via the `Boolean` global function
-pub fn is_static_boolean<'a>(expr: &Expression<'a>, ctx: &LintContext<'a>) -> bool {
+pub fn is_static_boolean<'a>(expr: &Expression<'a>, semantic: &Semantic<'a>) -> bool {
     match expr {
         Expression::BooleanLiteral(_) => true,
-        Expression::CallExpression(call_expr) => call_expr.is_constant(true, ctx),
+        Expression::CallExpression(call_expr) => call_expr.is_constant(true, semantic),
         Expression::UnaryExpression(unary_expr) => {
             unary_expr.operator == UnaryOperator::LogicalNot
-                && unary_expr.argument.is_constant(true, ctx)
+                && unary_expr.argument.is_constant(true, semantic)
         }
         _ => false,
     }
@@ -37,7 +28,7 @@ pub fn is_static_boolean<'a>(expr: &Expression<'a>, ctx: &LintContext<'a>) -> bo
 fn is_logical_identity(op: LogicalOperator, expr: &Expression) -> bool {
     match expr {
         expr if expr.is_literal() => {
-            let boolean_value = expr.get_boolean_value();
+            let boolean_value = expr.to_boolean();
             (op == LogicalOperator::Or && boolean_value == Some(true))
                 || (op == LogicalOperator::And && boolean_value == Some(false))
         }
@@ -71,45 +62,45 @@ fn is_logical_identity(op: LogicalOperator, expr: &Expression) -> bool {
 ///   When `false`, checks if -- for both string and number --
 ///   if coerced to that type, the value will be constant.
 pub trait IsConstant<'a, 'b> {
-    fn is_constant(&self, in_boolean_position: bool, ctx: &LintContext<'a>) -> bool;
+    fn is_constant(&self, in_boolean_position: bool, semantic: &Semantic<'a>) -> bool;
 }
 
-impl<'a, 'b> IsConstant<'a, 'b> for Expression<'a> {
-    fn is_constant(&self, in_boolean_position: bool, ctx: &LintContext<'a>) -> bool {
+impl<'a> IsConstant<'a, '_> for Expression<'a> {
+    fn is_constant(&self, in_boolean_position: bool, semantic: &Semantic<'a>) -> bool {
         match self {
-            Self::ArrowExpression(_)
+            Self::ArrowFunctionExpression(_)
             | Self::FunctionExpression(_)
             | Self::ClassExpression(_)
             | Self::ObjectExpression(_) => true,
             Self::TemplateLiteral(template) => {
                 let test_quasis = in_boolean_position
                     && template.quasis.iter().any(|quasi| {
-                        quasi.value.cooked.as_ref().map_or(false, |cooked| !cooked.is_empty())
+                        quasi.value.cooked.as_ref().is_some_and(|cooked| !cooked.is_empty())
                     });
                 let test_expressions =
-                    template.expressions.iter().all(|expr| expr.is_constant(false, ctx));
+                    template.expressions.iter().all(|expr| expr.is_constant(false, semantic));
                 test_quasis || test_expressions
             }
             Self::ArrayExpression(expr) => {
                 if in_boolean_position {
                     return true;
                 }
-                expr.elements.iter().all(|element| element.is_constant(false, ctx))
+                expr.elements.iter().all(|element| element.is_constant(false, semantic))
             }
             Self::UnaryExpression(expr) => match expr.operator {
                 UnaryOperator::Void => true,
                 UnaryOperator::Typeof if in_boolean_position => true,
-                UnaryOperator::LogicalNot => expr.argument.is_constant(true, ctx),
-                _ => expr.argument.is_constant(false, ctx),
+                UnaryOperator::LogicalNot => expr.argument.is_constant(true, semantic),
+                _ => expr.argument.is_constant(false, semantic),
             },
             Self::BinaryExpression(expr) => {
                 expr.operator != BinaryOperator::In
-                    && expr.left.is_constant(false, ctx)
-                    && expr.right.is_constant(false, ctx)
+                    && expr.left.is_constant(false, semantic)
+                    && expr.right.is_constant(false, semantic)
             }
             Self::LogicalExpression(expr) => {
-                let is_left_constant = expr.left.is_constant(in_boolean_position, ctx);
-                let is_right_constant = expr.right.is_constant(in_boolean_position, ctx);
+                let is_left_constant = expr.left.is_constant(in_boolean_position, semantic);
+                let is_right_constant = expr.right.is_constant(in_boolean_position, semantic);
                 let is_left_short_circuit =
                     is_left_constant && is_logical_identity(expr.operator, &expr.left);
                 let is_right_short_circuit = in_boolean_position
@@ -121,7 +112,7 @@ impl<'a, 'b> IsConstant<'a, 'b> for Expression<'a> {
             }
             Self::NewExpression(_) => in_boolean_position,
             Self::AssignmentExpression(expr) => match expr.operator {
-                AssignmentOperator::Assign => expr.right.is_constant(in_boolean_position, ctx),
+                AssignmentOperator::Assign => expr.right.is_constant(in_boolean_position, semantic),
                 AssignmentOperator::LogicalAnd if in_boolean_position => {
                     is_logical_identity(LogicalOperator::And, &expr.right)
                 }
@@ -134,13 +125,13 @@ impl<'a, 'b> IsConstant<'a, 'b> for Expression<'a> {
                 .expressions
                 .iter()
                 .last()
-                .map_or(false, |last| last.is_constant(in_boolean_position, ctx)),
-            Self::CallExpression(call_expr) => call_expr.is_constant(in_boolean_position, ctx),
+                .is_some_and(|last| last.is_constant(in_boolean_position, semantic)),
+            Self::CallExpression(call_expr) => call_expr.is_constant(in_boolean_position, semantic),
             Self::ParenthesizedExpression(paren_expr) => {
-                paren_expr.expression.is_constant(in_boolean_position, ctx)
+                paren_expr.expression.is_constant(in_boolean_position, semantic)
             }
             Self::Identifier(ident) => {
-                ident.name == "undefined" && ctx.semantic().is_reference_to_global_variable(ident)
+                ident.name == "undefined" && semantic.is_reference_to_global_variable(ident)
             }
             _ if self.is_literal() => true,
             _ => false,
@@ -148,75 +139,68 @@ impl<'a, 'b> IsConstant<'a, 'b> for Expression<'a> {
     }
 }
 
-impl<'a, 'b> IsConstant<'a, 'b> for CallExpression<'a> {
-    fn is_constant(&self, _in_boolean_position: bool, ctx: &LintContext<'a>) -> bool {
+impl<'a> IsConstant<'a, '_> for CallExpression<'a> {
+    fn is_constant(&self, _in_boolean_position: bool, semantic: &Semantic<'a>) -> bool {
         if let Expression::Identifier(ident) = &self.callee {
             if ident.name == "Boolean"
-                && self.arguments.iter().next().map_or(true, |first| first.is_constant(true, ctx))
+                && self
+                    .arguments
+                    .iter()
+                    .next()
+                    .map_or(true, |first| first.is_constant(true, semantic))
             {
-                return ctx.semantic().is_reference_to_global_variable(ident);
+                return semantic.is_reference_to_global_variable(ident);
             }
         }
         false
     }
 }
 
-impl<'a, 'b> IsConstant<'a, 'b> for Argument<'a> {
-    fn is_constant(&self, in_boolean_position: bool, ctx: &LintContext<'a>) -> bool {
+impl<'a> IsConstant<'a, '_> for Argument<'a> {
+    fn is_constant(&self, in_boolean_position: bool, semantic: &Semantic<'a>) -> bool {
         match self {
-            Self::SpreadElement(element) => element.is_constant(in_boolean_position, ctx),
-            Self::Expression(expr) => expr.is_constant(in_boolean_position, ctx),
+            Self::SpreadElement(element) => element.is_constant(in_boolean_position, semantic),
+            match_expression!(Self) => {
+                self.to_expression().is_constant(in_boolean_position, semantic)
+            }
         }
     }
 }
 
-impl<'a, 'b> IsConstant<'a, 'b> for ArrayExpressionElement<'a> {
-    fn is_constant(&self, in_boolean_position: bool, ctx: &LintContext<'a>) -> bool {
+impl<'a> IsConstant<'a, '_> for ArrayExpressionElement<'a> {
+    fn is_constant(&self, in_boolean_position: bool, semantic: &Semantic<'a>) -> bool {
         match self {
-            Self::SpreadElement(element) => element.is_constant(in_boolean_position, ctx),
-            Self::Expression(expr) => expr.is_constant(in_boolean_position, ctx),
+            Self::SpreadElement(element) => element.is_constant(in_boolean_position, semantic),
+            match_expression!(Self) => {
+                self.to_expression().is_constant(in_boolean_position, semantic)
+            }
             Self::Elision(_) => true,
         }
     }
 }
 
-impl<'a, 'b> IsConstant<'a, 'b> for SpreadElement<'a> {
-    fn is_constant(&self, in_boolean_position: bool, ctx: &LintContext<'a>) -> bool {
-        self.argument.is_constant(in_boolean_position, ctx)
+impl<'a> IsConstant<'a, '_> for SpreadElement<'a> {
+    fn is_constant(&self, in_boolean_position: bool, semantic: &Semantic<'a>) -> bool {
+        self.argument.is_constant(in_boolean_position, semantic)
     }
 }
 
-pub trait IsPrivate {
-    fn is_private(&self) -> bool;
-}
-
-impl<'a> IsPrivate for MethodDefinition<'a> {
-    fn is_private(&self) -> bool {
-        self.accessibility.map_or(false, |accessibility| accessibility == TSAccessibility::Private)
-    }
-}
-
-impl<'a> IsPrivate for PropertyDefinition<'a> {
-    fn is_private(&self) -> bool {
-        self.accessibility.map_or(false, |accessibility| accessibility == TSAccessibility::Private)
-    }
-}
-
-/// Return the innermost `Function` or `ArrowExpression` Node
+/// Return the innermost `Function` or `ArrowFunctionExpression` Node
 /// enclosing the specified node
 pub fn get_enclosing_function<'a, 'b>(
     node: &'b AstNode<'a>,
-    ctx: &'b LintContext<'a>,
+    semantic: &'b Semantic<'a>,
 ) -> Option<&'b AstNode<'a>> {
     let mut current_node = node;
     loop {
         if matches!(current_node.kind(), AstKind::Program(_)) {
             return None;
         }
-        if matches!(current_node.kind(), AstKind::Function(_) | AstKind::ArrowExpression(_)) {
+        if matches!(current_node.kind(), AstKind::Function(_) | AstKind::ArrowFunctionExpression(_))
+        {
             return Some(current_node);
         }
-        current_node = ctx.nodes().parent_node(current_node.id()).unwrap();
+        current_node = semantic.nodes().parent_node(current_node.id())?;
     }
 }
 
@@ -227,11 +211,14 @@ pub fn is_nth_argument<'a>(call: &CallExpression<'a>, arg: &Argument<'a>, n: usi
 }
 
 /// Jump to the outer most of chained parentheses if any
-pub fn outermost_paren<'a, 'b>(node: &'b AstNode<'a>, ctx: &'b LintContext<'a>) -> &'b AstNode<'a> {
+pub fn outermost_paren<'a, 'b>(
+    node: &'b AstNode<'a>,
+    semantic: &'b Semantic<'a>,
+) -> &'b AstNode<'a> {
     let mut node = node;
 
     loop {
-        if let Some(parent) = ctx.nodes().parent_node(node.id()) {
+        if let Some(parent) = semantic.nodes().parent_node(node.id()) {
             if let AstKind::ParenthesizedExpression(_) = parent.kind() {
                 node = parent;
                 continue;
@@ -246,55 +233,70 @@ pub fn outermost_paren<'a, 'b>(node: &'b AstNode<'a>, ctx: &'b LintContext<'a>) 
 
 pub fn outermost_paren_parent<'a, 'b>(
     node: &'b AstNode<'a>,
-    ctx: &'b LintContext<'a>,
+    semantic: &'b Semantic<'a>,
 ) -> Option<&'b AstNode<'a>> {
-    let mut node = node;
-
-    loop {
-        if let Some(parent) = ctx.nodes().parent_node(node.id()) {
-            if let AstKind::ParenthesizedExpression(_) = parent.kind() {
-                node = parent;
-                continue;
-            }
-        }
-
-        break;
-    }
-
-    ctx.nodes().parent_node(node.id())
+    semantic
+        .nodes()
+        .ancestors(node.id())
+        .skip(1)
+        .find(|parent| !matches!(parent.kind(), AstKind::ParenthesizedExpression(_)))
 }
 
-pub fn get_name_from_property_key(key: &PropertyKey<'_>) -> Option<Atom> {
-    match key {
-        PropertyKey::Identifier(ident) => Some(ident.name.clone()),
-        PropertyKey::PrivateIdentifier(ident) => {
-            let name = ident.name.clone();
+pub fn nth_outermost_paren_parent<'a, 'b>(
+    node: &'b AstNode<'a>,
+    semantic: &'b Semantic<'a>,
+    n: usize,
+) -> Option<&'b AstNode<'a>> {
+    semantic
+        .nodes()
+        .ancestors(node.id())
+        .skip(1)
+        .filter(|parent| !matches!(parent.kind(), AstKind::ParenthesizedExpression(_)))
+        .nth(n)
+}
 
-            Some(Atom::from(format!("#{name}")))
-        }
-        PropertyKey::Expression(expr) => match expr {
-            Expression::StringLiteral(lit) => Some(lit.value.clone()),
-            Expression::RegExpLiteral(lit) => Some(Atom::from(format!("{0}", lit.regex))),
-            Expression::NumberLiteral(lit) => Some(Atom::from(lit.raw)),
-            Expression::BigintLiteral(lit) => Some(Atom::from(format!("{0}", lit.value))),
-            Expression::NullLiteral(_) => Some("null".into()),
-            Expression::TemplateLiteral(lit) => {
-                lit.expressions.is_empty().then(|| lit.quasi()).flatten().cloned()
-            }
-            _ => None,
-        },
-    }
+/// Iterate over parents of `node`, skipping nodes that are also ignored by
+/// [`Expression::get_inner_expression`].
+pub fn iter_outer_expressions<'a, 's>(
+    semantic: &'s Semantic<'a>,
+    node_id: NodeId,
+) -> impl Iterator<Item = AstKind<'a>> + 's {
+    semantic.nodes().ancestor_kinds(node_id).skip(1).filter(|parent| {
+        !matches!(
+            parent,
+            AstKind::ParenthesizedExpression(_)
+                | AstKind::TSAsExpression(_)
+                | AstKind::TSSatisfiesExpression(_)
+                | AstKind::TSInstantiationExpression(_)
+                | AstKind::TSNonNullExpression(_)
+                | AstKind::TSTypeAssertion(_)
+        )
+    })
 }
 
 pub fn get_declaration_of_variable<'a, 'b>(
-    ident: &IdentifierReference,
-    ctx: &'b LintContext<'a>,
+    ident: &IdentifierReference<'a>,
+    semantic: &'b Semantic<'a>,
 ) -> Option<&'b AstNode<'a>> {
-    let symbol_table = ctx.semantic().symbols();
-    let reference_id = ident.reference_id.get()?;
-    let reference = symbol_table.get_reference(reference_id);
-    let symbol_id = reference.symbol_id()?;
-    Some(ctx.nodes().get_node(symbol_table.get_declaration(symbol_id)))
+    let symbol_id = get_symbol_id_of_variable(ident, semantic)?;
+    let symbol_table = semantic.symbols();
+    Some(semantic.nodes().get_node(symbol_table.get_declaration(symbol_id)))
+}
+
+pub fn get_declaration_from_reference_id<'a, 'b>(
+    reference_id: ReferenceId,
+    semantic: &'b Semantic<'a>,
+) -> Option<&'b AstNode<'a>> {
+    let symbol_table = semantic.symbols();
+    let symbol_id = symbol_table.get_reference(reference_id).symbol_id()?;
+    Some(semantic.nodes().get_node(symbol_table.get_declaration(symbol_id)))
+}
+
+pub fn get_symbol_id_of_variable(
+    ident: &IdentifierReference,
+    semantic: &Semantic<'_>,
+) -> Option<SymbolId> {
+    semantic.symbols().get_reference(ident.reference_id()).symbol_id()
 }
 
 pub fn extract_regex_flags<'a>(
@@ -303,11 +305,15 @@ pub fn extract_regex_flags<'a>(
     if args.len() <= 1 {
         return None;
     }
-    let Argument::Expression(Expression::StringLiteral(flag_arg)) = &args[1] else {
-        return None;
+    let flag_arg = match &args[1] {
+        Argument::StringLiteral(flag_arg) => flag_arg.value.clone(),
+        Argument::TemplateLiteral(template) if template.is_no_substitution_template() => {
+            template.quasi().expect("no-substitution templates always have a quasi")
+        }
+        _ => return None,
     };
     let mut flags = RegExpFlags::empty();
-    for ch in flag_arg.value.chars() {
+    for ch in flag_arg.chars() {
         let flag = RegExpFlags::try_from(ch).ok()?;
         flags |= flag;
     }
@@ -333,13 +339,18 @@ pub fn is_method_call<'a>(
         }
     }
 
-    let Expression::MemberExpression(member_expr) = &call_expr.callee.without_parenthesized()
-    else {
-        return false;
+    let callee_without_parentheses = call_expr.callee.without_parentheses();
+    let member_expr = match callee_without_parentheses {
+        match_member_expression!(Expression) => callee_without_parentheses.to_member_expression(),
+        Expression::ChainExpression(chain) => match chain.expression.member_expression() {
+            Some(e) => e,
+            None => return false,
+        },
+        _ => return false,
     };
 
     if let Some(objects) = objects {
-        let Expression::Identifier(ident) = member_expr.object().without_parenthesized() else {
+        let Expression::Identifier(ident) = member_expr.object().without_parentheses() else {
             return false;
         };
         if !objects.contains(&ident.name.as_str()) {
@@ -348,7 +359,9 @@ pub fn is_method_call<'a>(
     }
 
     if let Some(methods) = methods {
-        let Some(static_property_name) = member_expr.static_property_name() else { return false };
+        let Some(static_property_name) = member_expr.static_property_name() else {
+            return false;
+        };
         if !methods.contains(&static_property_name) {
             return false;
         }
@@ -374,7 +387,7 @@ pub fn is_new_expression<'a>(
         }
     }
 
-    let Expression::Identifier(ident) = new_expr.callee.without_parenthesized() else {
+    let Expression::Identifier(ident) = new_expr.callee.without_parentheses() else {
         return false;
     };
 
@@ -388,18 +401,71 @@ pub fn is_new_expression<'a>(
 pub fn call_expr_method_callee_info<'a>(
     call_expr: &'a CallExpression<'a>,
 ) -> Option<(Span, &'a str)> {
-    let Expression::MemberExpression(member_expr) = &call_expr.callee.without_parenthesized()
-    else {
-        return None;
-    };
-
+    let member_expr = call_expr.callee.without_parentheses().as_member_expression()?;
     member_expr.static_property_info()
 }
 
 pub fn get_new_expr_ident_name<'a>(new_expr: &'a NewExpression<'a>) -> Option<&'a str> {
-    let Expression::Identifier(ident) = new_expr.callee.without_parenthesized() else {
+    let Expression::Identifier(ident) = new_expr.callee.without_parentheses() else {
         return None;
     };
 
     Some(ident.name.as_str())
+}
+
+pub fn is_global_require_call(call_expr: &CallExpression, ctx: &Semantic) -> bool {
+    if call_expr.arguments.len() != 1 {
+        return false;
+    }
+    call_expr.callee.is_global_reference_name("require", ctx.symbols())
+}
+
+pub fn is_function_node(node: &AstNode) -> bool {
+    match node.kind() {
+        AstKind::Function(f) if f.is_function_declaration() => true,
+        AstKind::Function(f) if f.is_expression() => true,
+        AstKind::ArrowFunctionExpression(_) => true,
+        _ => false,
+    }
+}
+
+pub fn get_function_like_declaration<'b>(
+    node: &AstNode<'b>,
+    ctx: &Semantic<'b>,
+) -> Option<&'b BindingIdentifier<'b>> {
+    let parent = outermost_paren_parent(node, ctx)?;
+    let decl = parent.kind().as_variable_declarator()?;
+
+    decl.id.get_binding_identifier()
+}
+
+/// Get the first identifier reference within a member expression chain or
+/// standalone reference.
+///
+/// For example, when called on the right-hand side of this [`AssignmentExpression`]:
+/// ```ts
+/// let x = a
+/// //      ^
+/// let y = a.b.c
+/// //      ^
+/// ```
+///
+/// As this function walks down the member expression chain, if no identifier
+/// reference is found, it returns [`Err`] with the leftmost expression.
+/// ```ts
+/// let x = 1 + 1
+/// //      ^^^^^ Err(BinaryExpression)
+/// let y = this.foo.bar
+/// //      ^^^^ Err(ThisExpression)
+/// ```
+pub fn leftmost_identifier_reference<'a, 'b: 'a>(
+    expr: &'b Expression<'a>,
+) -> Result<&'a IdentifierReference<'a>, &'b Expression<'a>> {
+    match expr {
+        Expression::Identifier(ident) => Ok(ident.as_ref()),
+        Expression::StaticMemberExpression(mem) => leftmost_identifier_reference(&mem.object),
+        Expression::ComputedMemberExpression(mem) => leftmost_identifier_reference(&mem.object),
+        Expression::PrivateFieldExpression(mem) => leftmost_identifier_reference(&mem.object),
+        _ => Err(expr),
+    }
 }

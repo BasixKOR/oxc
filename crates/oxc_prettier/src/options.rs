@@ -3,9 +3,9 @@ use std::str::FromStr;
 /// Prettier Options
 ///
 /// References
-/// * https://prettier.io/docs/en/options
-/// * https://github.com/prettier/prettier/blob/main/src/main/core-options.evaluate.js
-/// * https://github.com/prettier/prettier/blob/main/src/language-js/options.js
+/// * <https://prettier.io/docs/en/options>
+/// * <https://github.com/prettier/prettier/blob/3.3.3/src/main/core-options.evaluate.js>
+/// * <https://github.com/prettier/prettier/blob/3.3.3/src/language-js/options.js>
 #[derive(Debug, Clone, Copy)]
 pub struct PrettierOptions {
     /* Global Options */
@@ -47,8 +47,10 @@ pub struct PrettierOptions {
     pub trailing_comma: TrailingComma,
 
     /// Print spaces between brackets in object literals.
+    ///
     /// * true - Example: `{ foo: bar }`.
     /// * false - Example: `{foo: bar}`.
+    ///
     /// Default: true
     pub bracket_spacing: bool,
 
@@ -126,10 +128,15 @@ pub enum QuoteProps {
 }
 
 impl QuoteProps {
-    pub fn is_preserve(self) -> bool {
+    pub fn as_needed(self) -> bool {
+        matches!(self, Self::AsNeeded)
+    }
+
+    pub fn preserve(self) -> bool {
         matches!(self, Self::Preserve)
     }
-    pub fn is_consistent(self) -> bool {
+
+    pub fn consistent(self) -> bool {
         matches!(self, Self::Consistent)
     }
 }

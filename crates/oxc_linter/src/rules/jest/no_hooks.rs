@@ -1,31 +1,24 @@
 use oxc_ast::{ast::Expression, AstKind};
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::Error,
-};
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
-use oxc_span::{GetSpan, Span};
+use oxc_span::{CompactStr, GetSpan, Span};
 
 use crate::{
     context::LintContext,
     rule::Rule,
-    utils::{
-        collect_possible_jest_call_node, is_type_of_jest_fn_call, JestFnKind, JestGeneralFnKind,
-        PossibleJestNode,
-    },
+    utils::{is_type_of_jest_fn_call, JestFnKind, JestGeneralFnKind, PossibleJestNode},
 };
 
-#[derive(Debug, Error, Diagnostic)]
-#[error("eslint-plugin-jest(no-hooks): Disallow setup and teardown hooks.")]
-#[diagnostic(severity(warning))]
-pub struct UnexpectedHookDiagonsitc(#[label] pub Span);
+fn unexpected_hook_diagonsitc(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("Do not use setup or teardown hooks").with_label(span)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct NoHooks(Box<NoHooksConfig>);
 
 #[derive(Debug, Default, Clone)]
 pub struct NoHooksConfig {
-    allow: Vec<String>,
+    allow: Vec<CompactStr>,
 }
 
 impl std::ops::Deref for NoHooks {
@@ -38,16 +31,20 @@ impl std::ops::Deref for NoHooks {
 
 declare_oxc_lint!(
     /// ### What it does
-    /// Jest provides global functions for setup and teardown tasks, which are called before/after each test case
-    /// and each test suite. The use of these hooks promotes shared state between tests.
+    ///
+    /// Disallows Jest setup and teardown hooks, such as `beforeAll`.
     ///
     /// ### Why is this bad?
     ///
+    /// Jest provides global functions for setup and teardown tasks, which are
+    /// called before/after each test case and each test suite. The use of these
+    /// hooks promotes shared state between tests.
+    ///
     /// This rule reports for the following function calls:
-    /// * beforeAll
-    /// * beforeEach
-    /// * afterAll
-    /// * afterEach
+    /// * `beforeAll`
+    /// * `beforeEach`
+    /// * `afterAll`
+    /// * `afterEach`
     ///
     /// ### Example
     ///
@@ -81,6 +78,7 @@ declare_oxc_lint!(
     /// });
     /// ```
     NoHooks,
+    jest,
     style,
 );
 
@@ -90,18 +88,18 @@ impl Rule for NoHooks {
             .get(0)
             .and_then(|config| config.get("allow"))
             .and_then(serde_json::Value::as_array)
-            .map(|v| {
-                v.iter().filter_map(serde_json::Value::as_str).map(ToString::to_string).collect()
-            })
+            .map(|v| v.iter().filter_map(serde_json::Value::as_str).map(CompactStr::from).collect())
             .unwrap_or_default();
 
         Self(Box::new(NoHooksConfig { allow }))
     }
 
-    fn run_once(&self, ctx: &LintContext) {
-        for possible_jest_node in collect_possible_jest_call_node(ctx) {
-            self.run(&possible_jest_node, ctx);
-        }
+    fn run_on_jest_node<'a, 'c>(
+        &self,
+        jest_node: &PossibleJestNode<'a, 'c>,
+        ctx: &'c LintContext<'a>,
+    ) {
+        self.run(jest_node, ctx);
     }
 }
 
@@ -121,8 +119,9 @@ impl NoHooks {
         }
 
         if let Expression::Identifier(ident) = &call_expr.callee {
-            if !self.allow.contains(&ident.name.to_string()) {
-                ctx.diagnostic(UnexpectedHookDiagonsitc(call_expr.callee.span()));
+            let name = CompactStr::from(ident.name.as_str());
+            if !self.allow.contains(&name) {
+                ctx.diagnostic(unexpected_hook_diagonsitc(call_expr.callee.span()));
             }
         }
     }
@@ -163,5 +162,7 @@ fn test() {
         ),
     ];
 
-    Tester::new(NoHooks::NAME, pass, fail).with_jest_plugin(true).test_and_snapshot();
+    Tester::new(NoHooks::NAME, NoHooks::PLUGIN, pass, fail)
+        .with_jest_plugin(true)
+        .test_and_snapshot();
 }
