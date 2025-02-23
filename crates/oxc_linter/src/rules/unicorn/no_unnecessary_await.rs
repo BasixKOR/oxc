@@ -1,18 +1,15 @@
-use oxc_ast::{ast::Expression, AstKind};
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::Error,
-};
-use oxc_formatter::Gen;
+use oxc_ast::{AstKind, ast::Expression};
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
-use oxc_span::Span;
+use oxc_span::{GetSpan, Span};
 
-use crate::{context::LintContext, rule::Rule, AstNode, Fix};
+use crate::{AstNode, context::LintContext, rule::Rule};
 
-#[derive(Debug, Error, Diagnostic)]
-#[error("eslint-plugin-unicorn(no-unnecessary-await): Disallow awaiting non-promise values")]
-#[diagnostic(severity(warning), help("consider to remove the `await`"))]
-struct NoUnnecessaryAwaitDiagnostic(#[label] pub Span);
+fn no_unnecessary_await_diagnostic(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("Unexpected `await` on a non-Promise value")
+        .with_help("Consider removing the `await`")
+        .with_label(span)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct NoUnnecessaryAwait;
@@ -25,11 +22,16 @@ declare_oxc_lint!(
     /// The `await` operator should only be used on `Promise` values.
     ///
     /// ### Example
+    ///
     /// ```javascript
-    /// await await promise;
+    /// async function bad() {
+    ///     await await promise;
+    /// }
     /// ```
     NoUnnecessaryAwait,
-    correctness
+    unicorn,
+    correctness,
+    conditional_fix
 );
 
 impl Rule for NoUnnecessaryAwait {
@@ -44,7 +46,7 @@ impl Rule for NoUnnecessaryAwait {
                     || matches!(expr.argument, Expression::ClassExpression(_))
             } || {
                 // `+await +1` -> `++1`
-                ctx.nodes().parent_node(node.id()).map_or(false, |parent| {
+                ctx.nodes().parent_node(node.id()).is_some_and(|parent| {
                     if let (
                         AstKind::UnaryExpression(parent_unary),
                         Expression::UnaryExpression(inner_unary),
@@ -56,18 +58,17 @@ impl Rule for NoUnnecessaryAwait {
                     }
                 })
             } {
-                ctx.diagnostic(NoUnnecessaryAwaitDiagnostic(Span::new(
+                ctx.diagnostic(no_unnecessary_await_diagnostic(Span::new(
                     expr.span.start,
                     expr.span.start + 5,
                 )));
             } else {
                 ctx.diagnostic_with_fix(
-                    NoUnnecessaryAwaitDiagnostic(Span::new(expr.span.start, expr.span.start + 5)),
-                    || {
-                        let mut formatter = ctx.formatter();
-                        expr.argument.gen(&mut formatter);
-                        Fix::new(formatter.into_code(), expr.span)
-                    },
+                    no_unnecessary_await_diagnostic(Span::new(
+                        expr.span.start,
+                        expr.span.start + 5,
+                    )),
+                    |fixer| fixer.replace(expr.span, fixer.source_range(expr.argument.span())),
                 );
             };
         }
@@ -77,7 +78,7 @@ impl Rule for NoUnnecessaryAwait {
 fn not_promise(expr: &Expression) -> bool {
     match expr {
         Expression::ArrayExpression(_)
-        | Expression::ArrowExpression(_)
+        | Expression::ArrowFunctionExpression(_)
         | Expression::AwaitExpression(_)
         | Expression::BinaryExpression(_)
         | Expression::ClassExpression(_)
@@ -86,8 +87,8 @@ fn not_promise(expr: &Expression) -> bool {
         | Expression::JSXFragment(_)
         | Expression::BooleanLiteral(_)
         | Expression::NullLiteral(_)
-        | Expression::NumberLiteral(_)
-        | Expression::BigintLiteral(_)
+        | Expression::NumericLiteral(_)
+        | Expression::BigIntLiteral(_)
         | Expression::RegExpLiteral(_)
         | Expression::StringLiteral(_)
         | Expression::TemplateLiteral(_)
@@ -158,13 +159,15 @@ fn test() {
     let fix = vec![
         ("await []", "[]", None),
         ("await (a == b)", "(a == b)", None),
-        ("+await -1", "+ -1", None),
-        ("-await +1", "- +1", None),
+        ("+await -1", "+-1", None),
+        ("-await +1", "-+1", None),
         ("await function() {}", "await function() {}", None), // no autofix
         ("await class {}", "await class {}", None),           // no autofix
         ("+await +1", "+await +1", None),                     // no autofix
         ("-await -1", "-await -1", None),                     // no autofix
     ];
 
-    Tester::new(NoUnnecessaryAwait::NAME, pass, fail).expect_fix(fix).test_and_snapshot();
+    Tester::new(NoUnnecessaryAwait::NAME, NoUnnecessaryAwait::PLUGIN, pass, fail)
+        .expect_fix(fix)
+        .test_and_snapshot();
 }

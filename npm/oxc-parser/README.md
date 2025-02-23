@@ -1,45 +1,36 @@
-# The JavaScript Oxidation Compiler
+# Oxc Parser
 
-See index.d.ts for `parseSync` and `parseAsync` API.
+## Features
 
-TypeScript typings for the AST is currently work in progress.
+- Returns ESM information.
 
-## cjs
+## Caveat
 
-```javascript
-const oxc = require("oxc-parser");
-const assert = require('assert');
+The parser alone does not fully check for syntax errors that are associated with semantic data (symbols and scopes).
+The full compiler is needed for such case, as the compiler does an additional semantic pass.
 
-function test(ret) {
-  assert(ret.program.body.length == 1);
-  assert(ret.errors.length == 0);
-}
+With this caveat, `oxc-parser` is best suited for parser plugins,
+where you need quick access to ESM information, as well as fast `magic-string` operations.
 
-test(oxc.parseSync("foo"));
-
-async function main() {
-  test(await oxc.parseAsync("foo"));
-}
-
-main()
-```
-
-## ESM
+## API
 
 ```javascript
-import oxc from 'oxc-parser';
-import assert from 'assert';
+import oxc from './index.js';
 
-function test(ret) {
-  assert(ret.program.body.length == 1);
-  assert(ret.errors.length == 0);
-}
+const code = 'const url: String = /* 🤨 */ import.meta.url;';
 
-test(oxc.parseSync("foo"));
+// File extension is used to determine which dialect to parse source as.
+const filename = 'test.tsx';
 
-async function main() {
-  test(await oxc.parseAsync("foo"));
-}
+const result = oxc.parseSync(filename, code);
+// or `await oxc.parseAsync(filename, code)`
 
-main()
+// An array of errors, if any.
+console.log(result.errors);
+
+// AST and comments.
+console.log(result.program, result.comments);
+
+// ESM information - imports, exports, `import.meta`s.
+console.log(result.module);
 ```

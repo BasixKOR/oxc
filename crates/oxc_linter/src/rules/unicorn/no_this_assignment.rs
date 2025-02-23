@@ -1,23 +1,18 @@
 use oxc_ast::{
-    ast::{AssignmentTarget, BindingPatternKind, Expression, SimpleAssignmentTarget},
     AstKind,
+    ast::{AssignmentTarget, BindingPatternKind, Expression},
 };
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::{self, Error},
-};
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
-use oxc_span::{Atom, Span};
+use oxc_span::Span;
 
-use crate::{context::LintContext, rule::Rule, AstNode};
+use crate::{AstNode, context::LintContext, rule::Rule};
 
-#[derive(Debug, Error, Diagnostic)]
-#[error("eslint-plugin-unicorn(no-this-assignment): Do not assign `this` to `{1}`")]
-#[diagnostic(
-    severity(warning),
-    help("Reference `this` directly instead of assigning it to a variable.")
-)]
-struct NoThisAssignmentDiagnostic(#[label] pub Span, Atom);
+fn no_this_assignment_diagnostic(span: Span, ident_name: &str) -> OxcDiagnostic {
+    OxcDiagnostic::warn(format!("Do not assign `this` to `{ident_name}`"))
+        .with_help("Reference `this` directly instead of assigning it to a variable.")
+        .with_label(span)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct NoThisAssignment;
@@ -31,9 +26,10 @@ declare_oxc_lint!(
     ///
     /// Assigning `this` to a variable is unnecessary and confusing.
     ///
-    /// ### Example
+    /// ### Examples
+    ///
+    /// Examples of **incorrect** code for this rule:
     /// ```javascript
-    /// // fail
     /// const foo = this;
     /// class Bar {
     /// 	method() {
@@ -42,8 +38,10 @@ declare_oxc_lint!(
     /// }
     ///
     /// new Bar().method();
+    /// ```
     ///
-    /// // pass
+    /// Examples of **correct** code for this rule:
+    /// ```javascript
     /// class Bar {
     /// 	constructor(fooInstance) {
     /// 		this.fooInstance = fooInstance;
@@ -56,6 +54,7 @@ declare_oxc_lint!(
     /// new Bar(this).method();
     /// ```
     NoThisAssignment,
+    unicorn,
     pedantic
 );
 
@@ -67,7 +66,7 @@ impl Rule for NoThisAssignment {
                     return;
                 };
 
-                if !matches!(init.without_parenthesized(), Expression::ThisExpression(_)) {
+                if !matches!(init.without_parentheses(), Expression::ThisExpression(_)) {
                     return;
                 }
 
@@ -76,34 +75,27 @@ impl Rule for NoThisAssignment {
                     return;
                 };
 
-                ctx.diagnostic(NoThisAssignmentDiagnostic(
+                ctx.diagnostic(no_this_assignment_diagnostic(
                     variable_decl.span,
-                    binding_ident.name.clone(),
+                    binding_ident.name.as_str(),
                 ));
             }
             AstKind::AssignmentExpression(assignment_expr) => {
                 if !matches!(
-                    assignment_expr.right.without_parenthesized(),
+                    assignment_expr.right.without_parentheses(),
                     Expression::ThisExpression(_)
                 ) {
                     return;
                 }
 
-                let AssignmentTarget::SimpleAssignmentTarget(simple_assignment_target) =
-                    &assignment_expr.left
+                let AssignmentTarget::AssignmentTargetIdentifier(ident) = &assignment_expr.left
                 else {
                     return;
                 };
 
-                let SimpleAssignmentTarget::AssignmentTargetIdentifier(ident) =
-                    simple_assignment_target
-                else {
-                    return;
-                };
-
-                ctx.diagnostic(NoThisAssignmentDiagnostic(
+                ctx.diagnostic(no_this_assignment_diagnostic(
                     assignment_expr.span,
-                    ident.name.clone(),
+                    ident.name.as_str(),
                 ));
             }
             _ => {}
@@ -143,5 +135,5 @@ fn test() {
         r"var foo = (bar), baz = (this);",
     ];
 
-    Tester::new_without_config(NoThisAssignment::NAME, pass, fail).test_and_snapshot();
+    Tester::new(NoThisAssignment::NAME, NoThisAssignment::PLUGIN, pass, fail).test_and_snapshot();
 }

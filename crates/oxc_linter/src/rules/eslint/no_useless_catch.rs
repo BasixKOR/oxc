@@ -1,31 +1,22 @@
 use oxc_ast::{
-    ast::{BindingPatternKind, Expression, Statement},
     AstKind,
+    ast::{BindingPatternKind, Expression, Statement},
 };
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::Error,
-};
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::Span;
 
-use crate::{context::LintContext, rule::Rule, AstNode};
+use crate::{AstNode, context::LintContext, rule::Rule};
 
-#[derive(Debug, Error, Diagnostic)]
-#[error("eslint(no-useless-catch): Unnecessary try/catch wrapper")]
-#[diagnostic(severity(warning))]
-struct NoUselessCatchDiagnostic(
-    #[label("is caught here")] pub Span,
-    #[label("and re-thrown here")] pub Span,
-);
+fn no_useless_catch_diagnostic(catch: Span, rethrow: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("Unnecessary try/catch wrapper")
+        .with_labels([catch.label("is caught here"), rethrow.label("and re-thrown here")])
+}
 
-#[derive(Debug, Error, Diagnostic)]
-#[error("eslint(no-useless-catch): Unnecessary catch clause")]
-#[diagnostic(severity(warning))]
-struct NoUselessCatchFinalizerDiagnostic(
-    #[label("is caught here")] pub Span,
-    #[label("and re-thrown here")] pub Span,
-);
+fn no_useless_catch_finalizer_diagnostic(catch: Span, rethrow: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("Unnecessary catch clause")
+        .with_labels([catch.label("is caught here"), rethrow.label("and re-thrown here")])
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct NoUselessCatch;
@@ -51,30 +42,37 @@ declare_oxc_lint!(
     /// }
     /// ```
     NoUselessCatch,
+    eslint,
     correctness
 );
 
 impl Rule for NoUselessCatch {
     fn run<'a>(&self, node: &AstNode<'a>, ctx: &LintContext<'a>) {
-        let AstKind::TryStatement(try_stmt) = node.kind() else { return };
-        let Some(catch_clause) = &try_stmt.handler else { return };
+        let AstKind::TryStatement(try_stmt) = node.kind() else {
+            return;
+        };
+        let Some(catch_clause) = &try_stmt.handler else {
+            return;
+        };
         let Some(BindingPatternKind::BindingIdentifier(binding_ident)) =
-            catch_clause.param.as_ref().map(|pattern| &pattern.kind)
+            catch_clause.param.as_ref().map(|param| &param.pattern.kind)
         else {
             return;
         };
         let Some(Statement::ThrowStatement(throw_stmt)) = catch_clause.body.body.first() else {
             return;
         };
-        let Expression::Identifier(throw_ident) = &throw_stmt.argument else { return };
+        let Expression::Identifier(throw_ident) = &throw_stmt.argument else {
+            return;
+        };
         if binding_ident.name == throw_ident.name {
             if try_stmt.finalizer.is_some() {
-                ctx.diagnostic(NoUselessCatchFinalizerDiagnostic(
+                ctx.diagnostic(no_useless_catch_finalizer_diagnostic(
                     binding_ident.span,
                     throw_stmt.span,
                 ));
             } else {
-                ctx.diagnostic(NoUselessCatchDiagnostic(binding_ident.span, throw_stmt.span));
+                ctx.diagnostic(no_useless_catch_diagnostic(binding_ident.span, throw_stmt.span));
             }
         }
     }
@@ -214,5 +212,5 @@ fn test() {
       ",
     ];
 
-    Tester::new_without_config(NoUselessCatch::NAME, pass, fail).test_and_snapshot();
+    Tester::new(NoUselessCatch::NAME, NoUselessCatch::PLUGIN, pass, fail).test_and_snapshot();
 }

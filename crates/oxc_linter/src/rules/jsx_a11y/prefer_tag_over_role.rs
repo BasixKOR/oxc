@@ -1,31 +1,27 @@
-use crate::{context::LintContext, rule::Rule, utils::has_jsx_prop_lowercase, AstNode};
-use once_cell::sync::Lazy;
-use oxc_ast::{
-    ast::{JSXAttributeItem, JSXAttributeValue, JSXElementName},
-    AstKind,
-};
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::{self, Error},
-};
-use oxc_macros::declare_oxc_lint;
-use oxc_span::Span;
+use lazy_static::lazy_static;
 use phf::phf_map;
 
-#[derive(Debug, Error, Diagnostic)]
-#[error(
-    "eslint-plugin-jsx-a11y(prefer-tag-over-role): Prefer `{tag}` over `role` attribute `{role}`."
-)]
-#[diagnostic(
-    severity(warning),
-    help("Replace HTML elements with `role` attribute `{role}` to corresponding semantic HTML tag `{tag}`.")
-)]
-struct PreferTagOverRoleDiagnostic {
-    #[label]
-    pub span: Span,
-    pub tag: String,
-    pub role: String,
+use oxc_ast::{
+    AstKind,
+    ast::{JSXAttributeItem, JSXAttributeValue},
+};
+use oxc_diagnostics::OxcDiagnostic;
+use oxc_macros::declare_oxc_lint;
+use oxc_span::Span;
+
+use crate::{
+    AstNode,
+    context::LintContext,
+    rule::Rule,
+    utils::{get_element_type, has_jsx_prop_ignore_case},
+};
+
+fn prefer_tag_over_role_diagnostic(span: Span, tag: &str, role: &str) -> OxcDiagnostic {
+    OxcDiagnostic::warn(format!("Prefer `{tag}` over `role` attribute `{role}`."))
+        .with_help(format!("Replace HTML elements with `role` attribute `{role}` to corresponding semantic HTML tag `{tag}`."))
+        .with_label(span)
 }
+
 #[derive(Debug, Default, Clone)]
 pub struct PreferTagOverRole;
 
@@ -37,14 +33,18 @@ declare_oxc_lint!(
     /// Using semantic HTML tags can improve accessibility and readability of the code.
     ///
     /// ### Example
-    /// ```javascript
-    /// // Bad
-    /// <div role="button" />
     ///
-    /// // Good
+    /// Examples of **incorrect** code for this rule:
+    /// ```jsx
+    /// <div role="button" />
+    /// ```
+    ///
+    /// Examples of **correct** code for this rule:
+    /// ```jsx
     /// <button />
     /// ```
     PreferTagOverRole,
+    jsx_a11y,
     correctness
 );
 
@@ -52,7 +52,7 @@ impl PreferTagOverRole {
     fn check_roles<'a>(
         role_prop: &JSXAttributeItem<'a>,
         role_to_tag: &phf::Map<&str, &str>,
-        jsx_name: &JSXElementName<'a>,
+        jsx_name: &str,
         ctx: &LintContext<'a>,
     ) {
         if let JSXAttributeItem::Attribute(attr) = role_prop {
@@ -65,44 +65,38 @@ impl PreferTagOverRole {
         }
     }
 
-    fn check_role<'a>(
+    fn check_role(
         role: &str,
         role_to_tag: &phf::Map<&str, &str>,
-        jsx_name: &JSXElementName<'a>,
+        jsx_name: &str,
         span: Span,
-        ctx: &LintContext<'a>,
+        ctx: &LintContext,
     ) {
         if let Some(tag) = role_to_tag.get(role) {
-            match jsx_name {
-                JSXElementName::Identifier(id) if id.name != *tag => {
-                    ctx.diagnostic(PreferTagOverRoleDiagnostic {
-                        span,
-                        tag: (*tag).to_string(),
-                        role: role.to_string(),
-                    });
-                }
-                _ => {}
+            if jsx_name != *tag {
+                ctx.diagnostic(prefer_tag_over_role_diagnostic(span, tag, role));
             }
         }
     }
 }
 
-static ROLE_TO_TAG_MAP: Lazy<phf::Map<&'static str, &'static str>> = Lazy::new(|| {
-    phf_map! {
+lazy_static! {
+    static ref ROLE_TO_TAG_MAP: phf::Map<&'static str, &'static str> = phf_map! {
         "checkbox" => "input",
         "button" => "button",
         "heading" => "h1,h2,h3,h4,h5,h6",
         "link" => "a,area",
         "rowgroup" => "tbody,tfoot,thead",
         "banner" => "header",
-    }
-});
+    };
+}
 
 impl Rule for PreferTagOverRole {
     fn run<'a>(&self, node: &AstNode<'a>, ctx: &LintContext<'a>) {
         if let AstKind::JSXOpeningElement(jsx_el) = node.kind() {
-            if let Some(role_prop) = has_jsx_prop_lowercase(jsx_el, "role") {
-                Self::check_roles(role_prop, &ROLE_TO_TAG_MAP, &jsx_el.name, ctx);
+            let name = get_element_type(ctx, jsx_el);
+            if let Some(role_prop) = has_jsx_prop_ignore_case(jsx_el, "role") {
+                Self::check_roles(role_prop, &ROLE_TO_TAG_MAP, &name, ctx);
             }
         }
     }
@@ -129,5 +123,5 @@ fn test() {
         r#"<other role="checkbox" />"#,
         r#"<div role="banner" />"#,
     ];
-    Tester::new_without_config(PreferTagOverRole::NAME, pass, fail).test_and_snapshot();
+    Tester::new(PreferTagOverRole::NAME, PreferTagOverRole::PLUGIN, pass, fail).test_and_snapshot();
 }

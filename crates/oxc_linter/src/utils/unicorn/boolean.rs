@@ -1,18 +1,20 @@
 use oxc_ast::{
-    ast::{CallExpression, Expression},
     AstKind,
+    ast::{CallExpression, ConditionalExpression, Expression},
 };
 use oxc_semantic::AstNode;
+use oxc_span::GetSpan;
 use oxc_syntax::operator::UnaryOperator;
 
-use crate::{ast_util::outermost_paren_parent, LintContext};
-
 use super::is_logical_expression;
+use crate::{LintContext, ast_util::outermost_paren_parent};
 pub fn is_logic_not(node: &AstKind) -> bool {
     matches!(node, AstKind::UnaryExpression(unary_expr) if unary_expr.operator == UnaryOperator::LogicalNot)
 }
 fn is_logic_not_argument<'a, 'b>(node: &'b AstNode<'a>, ctx: &'b LintContext<'a>) -> bool {
-    let Some(parent) = outermost_paren_parent(node, ctx) else { return false };
+    let Some(parent) = outermost_paren_parent(node, ctx) else {
+        return false;
+    };
     is_logic_not(&parent.kind())
 }
 pub fn is_boolean_call(kind: &AstKind) -> bool {
@@ -43,17 +45,26 @@ pub fn is_boolean_node<'a, 'b>(node: &'b AstNode<'a>, ctx: &'b LintContext<'a>) 
         return true;
     }
 
-    let Some(parent) = outermost_paren_parent(node, ctx) else { return false };
+    let Some(parent) = outermost_paren_parent(node, ctx) else {
+        return false;
+    };
 
     if matches!(
         parent.kind(),
         AstKind::IfStatement(_)
-            | AstKind::ConditionalExpression(_)
             | AstKind::WhileStatement(_)
             | AstKind::DoWhileStatement(_)
             | AstKind::ForStatement(_)
     ) {
         return true;
+    }
+
+    if let AstKind::ConditionalExpression(ConditionalExpression {
+        test: conditional_test, ..
+    }) = parent.kind()
+    {
+        let expr_span = conditional_test.get_inner_expression().without_parentheses().span();
+        return expr_span == node.kind().span();
     }
 
     if is_logical_expression(parent) {

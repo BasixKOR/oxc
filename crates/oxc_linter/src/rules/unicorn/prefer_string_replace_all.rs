@@ -1,24 +1,22 @@
 use oxc_ast::{
-    ast::{Argument, Expression, MemberExpression, RegExpFlags},
     AstKind,
+    ast::{Argument, MemberExpression, RegExpFlags},
 };
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::{self, Error},
-};
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
-use oxc_span::{Atom, Span};
+use oxc_regular_expression::ast::Term;
+use oxc_span::{CompactStr, GetSpan, Span};
 
-use crate::{ast_util::extract_regex_flags, context::LintContext, rule::Rule, AstNode};
+use crate::{AstNode, ast_util::extract_regex_flags, context::LintContext, rule::Rule};
 
-#[derive(Debug, Error, Diagnostic)]
-enum PreferStringReplaceAllDiagnostic {
-    #[error("eslint-plugin-unicorn(prefer-string-replace-all): This pattern can be replaced with `{1}`.")]
-    #[diagnostic(severity(warning))]
-    StringLiteral(#[label] Span, Atom),
-    #[error("eslint-plugin-unicorn(prefer-string-replace-all): Prefer `String#replaceAll()` over `String#replace()` when using a regex with the global flag.")]
-    #[diagnostic(severity(warning))]
-    UseReplaceAll(#[label] Span),
+fn string_literal(span: Span, replacement: &str) -> OxcDiagnostic {
+    OxcDiagnostic::warn(format!("This pattern can be replaced with `{replacement}`."))
+        .with_label(span)
+}
+
+fn use_replace_all(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("Prefer `String#replaceAll()` over `String#replace()` when using a regex with the global flag.")
+        .with_label(span)
 }
 
 #[derive(Debug, Default, Clone)]
@@ -34,17 +32,35 @@ declare_oxc_lint!(
     /// The [`String#replaceAll()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/replaceAll) method is both faster and safer as you don't have to use a regex and remember to escape it if the string is not a literal. And when used with a regex, it makes the intent clearer.
     ///
     /// ### Example
-    /// ```javascript
+    ///
+    /// Examples of **incorrect** code for this rule:
+    /// ```js
+    /// array.reduceRight(reducer, initialValue);
+    /// ```
+    ///
+    /// Examples of **correct** code for this rule:
+    /// ```js
+    /// foo.replace(/a/, bar)
+    /// foo.replaceAll(/a/, bar)
+    ///
+    /// const pattern = "not-a-regexp"
+    /// foo.replace(pattern, bar)
     /// ```
     PreferStringReplaceAll,
-    pedantic
+    unicorn,
+    pedantic,
+    fix
 );
 
 impl Rule for PreferStringReplaceAll {
     fn run<'a>(&self, node: &AstNode<'a>, ctx: &LintContext<'a>) {
-        let AstKind::CallExpression(call_expr) = node.kind() else { return };
+        let AstKind::CallExpression(call_expr) = node.kind() else {
+            return;
+        };
 
-        let Some(member_expr) = call_expr.callee.get_member_expr() else { return };
+        let Some(member_expr) = call_expr.callee.get_member_expr() else {
+            return;
+        };
 
         let MemberExpression::StaticMemberExpression(static_member_expr) = member_expr else {
             return;
@@ -60,33 +76,33 @@ impl Rule for PreferStringReplaceAll {
             return;
         }
 
-        let Argument::Expression(pattern) = &call_expr.arguments[0] else { return };
-
+        let pattern = &call_expr.arguments[0];
         match method_name_str {
             "replaceAll" => {
-                if let Some(k) = get_pattern_replacement(pattern) {
-                    ctx.diagnostic(PreferStringReplaceAllDiagnostic::StringLiteral(
-                        static_member_expr.property.span,
-                        k,
-                    ));
+                if let Some(k) = get_pattern_replacement(pattern, ctx) {
+                    ctx.diagnostic_with_fix(string_literal(pattern.span(), &k), |fixer| {
+                        // foo.replaceAll(/hello world/g, bar) => foo.replaceAll("hello world", bar)
+                        fixer.replace(pattern.span(), format!("{k:?}"))
+                    });
                 }
             }
             "replace" if is_reg_exp_with_global_flag(pattern) => {
-                ctx.diagnostic(PreferStringReplaceAllDiagnostic::UseReplaceAll(
-                    static_member_expr.property.span,
-                ));
+                ctx.diagnostic_with_fix(
+                    use_replace_all(static_member_expr.property.span),
+                    |fixer| fixer.replace(static_member_expr.property.span, "replaceAll"),
+                );
             }
             _ => {}
         }
     }
 }
 
-fn is_reg_exp_with_global_flag<'a>(expr: &'a Expression<'a>) -> bool {
-    if let Expression::RegExpLiteral(reg_exp_literal) = expr {
+fn is_reg_exp_with_global_flag<'a>(expr: &'a Argument<'a>) -> bool {
+    if let Argument::RegExpLiteral(reg_exp_literal) = expr {
         return reg_exp_literal.regex.flags.contains(RegExpFlags::G);
     }
 
-    if let Expression::NewExpression(new_expr) = expr {
+    if let Argument::NewExpression(new_expr) = expr {
         if !new_expr.callee.is_specific_id("RegExp") {
             return false;
         }
@@ -99,23 +115,34 @@ fn is_reg_exp_with_global_flag<'a>(expr: &'a Expression<'a>) -> bool {
     false
 }
 
-fn get_pattern_replacement<'a>(expr: &'a Expression<'a>) -> Option<Atom> {
-    let Expression::RegExpLiteral(reg_exp_literal) = expr else { return None };
+fn get_pattern_replacement<'a>(
+    expr: &'a Argument<'a>,
+    ctx: &LintContext<'a>,
+) -> Option<CompactStr> {
+    let Argument::RegExpLiteral(reg_exp_literal) = expr else {
+        return None;
+    };
 
     if !reg_exp_literal.regex.flags.contains(RegExpFlags::G) {
         return None;
     }
 
-    if !is_simple_string(&reg_exp_literal.regex.pattern) {
+    let pattern_terms = reg_exp_literal
+        .regex
+        .pattern
+        .as_pattern()
+        .filter(|pattern| pattern.body.body.len() == 1)
+        .and_then(|pattern| pattern.body.body.first().map(|it| &it.body))?;
+    let is_simple_string = pattern_terms.iter().all(|term| matches!(term, Term::Character(_)));
+
+    if !is_simple_string {
         return None;
     }
 
-    Some(reg_exp_literal.regex.pattern.clone())
-}
+    let pattern_text = reg_exp_literal.regex.pattern.source_text(ctx.source_text());
+    let pattern_text = pattern_text.as_ref();
 
-fn is_simple_string(str: &str) -> bool {
-    str.chars()
-        .all(|c| !matches!(c, '^' | '$' | '+' | '[' | '{' | '(' | '\\' | '.' | '?' | '*' | '|'))
+    Some(CompactStr::new(pattern_text))
 }
 
 #[test]
@@ -125,6 +152,7 @@ fn test() {
     let pass = vec![
         r"foo.replace(/a/, bar)",
         r"foo.replaceAll(/a/, bar)",
+        r"foo.replaceAll(/a|b/g, bar)",
         r#"foo.replace("string", bar)"#,
         r#"foo.replaceAll("string", bar)"#,
         r"foo.replace(/a/g)",
@@ -205,5 +233,12 @@ fn test() {
         r#""Hello world".replaceAll(/world/g, 'world!');"#,
     ];
 
-    Tester::new_without_config(PreferStringReplaceAll::NAME, pass, fail).test_and_snapshot();
+    let fix = vec![
+        ("foo.replace(/a/g, bar)", "foo.replaceAll(/a/g, bar)"),
+        ("foo.replaceAll(/a/g, bar)", "foo.replaceAll(\"a\", bar)"),
+    ];
+
+    Tester::new(PreferStringReplaceAll::NAME, PreferStringReplaceAll::PLUGIN, pass, fail)
+        .expect_fix(fix)
+        .test_and_snapshot();
 }

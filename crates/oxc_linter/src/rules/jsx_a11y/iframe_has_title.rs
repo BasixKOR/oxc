@@ -1,27 +1,23 @@
 use oxc_ast::{
-    ast::{Expression, JSXAttributeValue, JSXElementName, JSXExpression, JSXExpressionContainer},
     AstKind,
+    ast::{JSXAttributeValue, JSXExpression},
 };
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::Error,
-};
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
-use oxc_span::Span;
+use oxc_span::{GetSpan, Span};
 
 use crate::{
+    AstNode,
     context::LintContext,
     rule::Rule,
-    utils::{get_prop_value, has_jsx_prop_lowercase},
-    AstNode,
+    utils::{get_element_type, get_prop_value, has_jsx_prop_ignore_case},
 };
 
-#[derive(Debug, Error, Diagnostic)]
-#[error(
-    "eslint-plugin-jsx-a11y(iframe-has-title): Missing `title` attribute for the `iframe` element."
-)]
-#[diagnostic(severity(warning), help("Provide title property for iframe element."))]
-struct IframeHasTitleDiagnostic(#[label] pub Span);
+fn iframe_has_title_diagnostic(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("Missing `title` attribute for the `iframe` element.")
+        .with_help("Provide title property for iframe element.")
+        .with_label(span)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct IframeHasTitle;
@@ -31,7 +27,7 @@ declare_oxc_lint!(
     ///
     /// Enforce iframe elements have a title attribute.
     ///
-    /// ### Why is this necessary?
+    /// ### Why is this bad?
     ///
     /// Screen reader users rely on a iframe title to describe the contents of the iframe.
     /// Navigating through iframe and iframe elements quickly becomes difficult and confusing for users of this technology if the markup does not contain a title attribute.
@@ -41,8 +37,9 @@ declare_oxc_lint!(
     /// This rule checks for title property on iframe element.
     ///
     /// ### Example
-    /// ```javascript
-    /// // Bad
+    ///
+    /// Examples of **incorrect** code for this rule:
+    /// ```jsx
     /// <iframe />
     /// <iframe {...props} />
     /// <iframe title="" />
@@ -52,12 +49,15 @@ declare_oxc_lint!(
     /// <iframe title={false} />
     /// <iframe title={true} />
     /// <iframe title={42} />
+    /// ```
     ///
-    /// // Good
+    /// Examples of **correct** code for this rule:
+    /// ```jsx
     /// <iframe title="This is a unique title" />
     /// <iframe title={uniqueTitle} />
     /// ```
     IframeHasTitle,
+    jsx_a11y,
     correctness
 );
 
@@ -67,20 +67,13 @@ impl Rule for IframeHasTitle {
             return;
         };
 
-        let JSXElementName::Identifier(iden) = &jsx_el.name else {
-            return;
-        };
-
-        let name = iden.name.as_str();
+        let name = get_element_type(ctx, jsx_el);
 
         if name != "iframe" {
             return;
         }
-
-        let alt_prop = if let Some(prop) = has_jsx_prop_lowercase(jsx_el, "title") {
-            prop
-        } else {
-            ctx.diagnostic(IframeHasTitleDiagnostic(iden.span));
+        let Some(alt_prop) = has_jsx_prop_ignore_case(jsx_el, "title") else {
+            ctx.diagnostic(iframe_has_title_diagnostic(jsx_el.name.span()));
             return;
         };
 
@@ -90,17 +83,14 @@ impl Rule for IframeHasTitle {
                     return;
                 }
             }
-            Some(JSXAttributeValue::ExpressionContainer(JSXExpressionContainer {
-                expression: JSXExpression::Expression(expr),
-                ..
-            })) => {
-                if expr.is_string_literal() {
-                    if let Expression::StringLiteral(str) = expr {
-                        if !str.value.as_str().is_empty() {
+            Some(JSXAttributeValue::ExpressionContainer(container)) => {
+                match &container.expression {
+                    JSXExpression::StringLiteral(str) => {
+                        if !str.value.is_empty() {
                             return;
                         }
                     }
-                    if let Expression::TemplateLiteral(tmpl) = expr {
+                    JSXExpression::TemplateLiteral(tmpl) => {
                         if !tmpl.quasis.is_empty()
                             & !tmpl.expressions.is_empty()
                             & tmpl.quasis.iter().any(|q| !q.value.raw.as_str().is_empty())
@@ -108,16 +98,21 @@ impl Rule for IframeHasTitle {
                             return;
                         }
                     }
-                }
-
-                if expr.is_identifier_reference() & !expr.is_undefined() {
-                    return;
+                    JSXExpression::CallExpression(_) => {
+                        return;
+                    }
+                    expr @ JSXExpression::Identifier(_) => {
+                        if !expr.is_undefined() {
+                            return;
+                        }
+                    }
+                    _ => {}
                 }
             }
             _ => {}
         }
 
-        ctx.diagnostic(IframeHasTitleDiagnostic(iden.span));
+        ctx.diagnostic(iframe_has_title_diagnostic(jsx_el.name.span()));
     }
 }
 
@@ -127,30 +122,51 @@ fn test() {
 
     let pass = vec![
         // DEFAULT ELEMENT TESTS
-        (r"<div />;", None),
-        (r"<iframe title='Unique title' />", None),
-        (r"<iframe title={foo} />", None),
-        (r"<FooComponent />", None),
-        // TODO: When polymorphic components are supported
+        (r"<div />;", None, None),
+        (r"<iframe title='Unique title' />", None, None),
+        (r"<iframe title={foo} />", None, None),
+        (r"<FooComponent />", None, None),
+        (r"<iframe title={titleGenerator('hello')} />", None, None),
         // CUSTOM ELEMENT TESTS FOR COMPONENTS SETTINGS
-        // (r"<FooComponent title='Unique title' />", None),
+        (
+            r"<FooComponent title='Unique title' />",
+            None,
+            Some(serde_json::json!({
+              "settings": { "jsx-a11y": {
+                "components": {
+                  "FooComponent": "iframe",
+                },
+              }, }
+            })),
+        ),
     ];
 
     let fail = vec![
         // DEFAULT ELEMENT TESTS
-        (r"<iframe />", None),
-        (r"<iframe {...props} />", None),
-        (r"<iframe title={undefined} />", None),
-        (r"<iframe title='' />", None),
-        (r"<iframe title={false} />", None),
-        (r"<iframe title={true} />", None),
-        (r"<iframe title={''} />", None),
-        (r"<iframe title={``} />", None),
-        (r"<iframe title={42} />", None),
-        // TODO: When polymorphic components are supported
+        (r"<iframe />", None, None),
+        (r"<iframe {...props} />", None, None),
+        (r"<iframe title={undefined} />", None, None),
+        (r"<iframe title='' />", None, None),
+        (r"<iframe title={false} />", None, None),
+        (r"<iframe title={true} />", None, None),
+        (r"<iframe title={''} />", None, None),
+        (r"<iframe title={``} />", None, None),
+        (r"<iframe title={42} />", None, None),
         // CUSTOM ELEMENT TESTS FOR COMPONENTS SETTINGS
-        // (r"<FooComponent />", None),
+        (
+            r"<FooComponent />",
+            None,
+            Some(serde_json::json!({
+              "settings": { "jsx-a11y": {
+                "components": {
+                  "FooComponent": "iframe",
+                },
+              }, }
+            })),
+        ),
     ];
 
-    Tester::new(IframeHasTitle::NAME, pass, fail).with_jsx_a11y_plugin(true).test_and_snapshot();
+    Tester::new(IframeHasTitle::NAME, IframeHasTitle::PLUGIN, pass, fail)
+        .with_jsx_a11y_plugin(true)
+        .test_and_snapshot();
 }

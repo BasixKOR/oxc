@@ -1,24 +1,21 @@
 use oxc_ast::{
-    ast::{
-        Expression, ImportDeclarationSpecifier, JSXAttributeItem, JSXAttributeName,
-        ModuleDeclaration, ObjectPropertyKind, PropertyKey,
-    },
     AstKind,
+    ast::{Expression, JSXAttributeItem, JSXAttributeName, ObjectPropertyKind, PropertyKey},
 };
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::Error,
-};
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::{GetSpan, Span};
 use rustc_hash::FxHashSet;
 
-use crate::{context::LintContext, rule::Rule, AstNode};
+use crate::{AstNode, context::LintContext, rule::Rule};
 
-#[derive(Debug, Error, Diagnostic)]
-#[error("eslint-plugin-next(inline-script-id): `next/script` components with inline content must specify an `id` attribute.")]
-#[diagnostic(severity(warning), help("See https://nextjs.org/docs/messages/inline-script-id"))]
-struct InlineScriptIdDiagnostic(#[label] pub Span);
+fn inline_script_id_diagnostic(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn(
+        "`next/script` components with inline content must specify an `id` attribute.",
+    )
+    .with_help("See https://nextjs.org/docs/messages/inline-script-id")
+    .with_label(span)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct InlineScriptId;
@@ -34,13 +31,16 @@ declare_oxc_lint!(
     /// ```javascript
     /// ```
     InlineScriptId,
+    nextjs,
     correctness
 );
 
 impl Rule for InlineScriptId {
     fn run<'a>(&self, node: &AstNode<'a>, ctx: &LintContext<'a>) {
-        let AstKind::ModuleDeclaration(ModuleDeclaration::ImportDeclaration(import_decl)) =
-            node.kind()
+        let AstKind::ImportDefaultSpecifier(specifier) = node.kind() else {
+            return;
+        };
+        let Some(AstKind::ImportDeclaration(import_decl)) = ctx.nodes().parent_kind(node.id())
         else {
             return;
         };
@@ -49,27 +49,16 @@ impl Rule for InlineScriptId {
             return;
         }
 
-        let Some(import_specifiers) = &import_decl.specifiers else { return };
-
-        // find default import
-        let Some(default_import) = import_specifiers.iter().find_map(|import_specifier| {
-            let ImportDeclarationSpecifier::ImportDefaultSpecifier(import_default_specifier) =
-                import_specifier
-            else {
-                return None;
+        'references_loop: for reference in
+            ctx.semantic().symbol_references(specifier.local.symbol_id())
+        {
+            let Some(node) = ctx.nodes().parent_node(reference.node_id()) else {
+                return;
             };
 
-            Some(import_default_specifier)
-        }) else {
-            return;
-        };
-
-        'references_loop: for reference in
-            ctx.semantic().symbol_references(default_import.local.symbol_id.get().unwrap())
-        {
-            let node = ctx.nodes().get_node(reference.node_id());
-
-            let AstKind::JSXElementName(_) = node.kind() else { continue };
+            let AstKind::JSXElementName(_) = node.kind() else {
+                continue;
+            };
             let parent_node = ctx.nodes().parent_node(node.id()).unwrap();
             let AstKind::JSXOpeningElement(jsx_opening_element) = parent_node.kind() else {
                 continue;
@@ -86,17 +75,17 @@ impl Rule for InlineScriptId {
                 match prop {
                     JSXAttributeItem::Attribute(attr) => {
                         if let JSXAttributeName::Identifier(ident) = &attr.name {
-                            prop_names_hash_set.insert(ident.name.clone());
+                            prop_names_hash_set.insert(ident.name);
                         }
                     }
                     JSXAttributeItem::SpreadAttribute(spread_attr) => {
                         if let Expression::ObjectExpression(obj_expr) =
-                            spread_attr.argument.without_parenthesized()
+                            spread_attr.argument.without_parentheses()
                         {
                             for prop in &obj_expr.properties {
                                 if let ObjectPropertyKind::ObjectProperty(obj_prop) = prop {
-                                    if let PropertyKey::Identifier(ident) = &obj_prop.key {
-                                        prop_names_hash_set.insert(ident.name.clone());
+                                    if let PropertyKey::StaticIdentifier(ident) = &obj_prop.key {
+                                        prop_names_hash_set.insert(ident.name);
                                     }
                                 }
                             }
@@ -114,7 +103,7 @@ impl Rule for InlineScriptId {
             if jsx_element.children.len() > 0
                 || prop_names_hash_set.contains("dangerouslySetInnerHTML")
             {
-                ctx.diagnostic(InlineScriptIdDiagnostic(jsx_opening_element.name.span()));
+                ctx.diagnostic(inline_script_id_diagnostic(jsx_opening_element.name.span()));
             }
         }
     }
@@ -246,7 +235,7 @@ fn test() {
 			        }",
     ];
 
-    Tester::new_without_config(InlineScriptId::NAME, pass, fail)
+    Tester::new(InlineScriptId::NAME, InlineScriptId::PLUGIN, pass, fail)
         .with_nextjs_plugin(true)
         .test_and_snapshot();
 }

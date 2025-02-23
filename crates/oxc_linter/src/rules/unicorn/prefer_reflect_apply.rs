@@ -1,22 +1,18 @@
 use oxc_ast::{
-    ast::{Argument, Expression, MemberExpression},
     AstKind,
+    ast::{Argument, Expression, MemberExpression},
 };
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::Error,
-};
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::Span;
 
-use crate::{context::LintContext, rule::Rule, AstNode};
+use crate::{AstNode, context::LintContext, rule::Rule};
 
-#[derive(Debug, Error, Diagnostic)]
-#[error(
-    "eslint-plugin-unicorn(prefer-reflect-apply): Prefer Reflect.apply() over Function#apply()"
-)]
-#[diagnostic(severity(warning), help("Reflect.apply() is less verbose and easier to understand."))]
-struct PreferReflectApplyDiagnostic(#[label] pub Span);
+fn prefer_reflect_apply_diagnostic(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("Prefer Reflect.apply() over Function#apply()")
+        .with_help("Reflect.apply() is less verbose and easier to understand.")
+        .with_label(span)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct PreferReflectApply;
@@ -32,22 +28,26 @@ declare_oxc_lint!(
     /// it's not safe to assume .apply() exists or is not overridden.
     ///
     /// ### Example
-    /// ```javascript
-    /// // Bad
-    /// foo.apply(null, [42]);
     ///
-    /// // Good
+    /// Examples of **incorrect** code for this rule:
+    /// ```javascript
+    /// foo.apply(null, [42]);
+    /// ```
+    ///
+    /// Examples of **correct** code for this rule:
+    /// ```javascript
     /// Reflect.apply(foo, null);
     /// ```
     PreferReflectApply,
+    unicorn,
     style
 );
 
 fn is_apply_signature(first_arg: &Argument, second_arg: &Argument) -> bool {
     match first_arg {
-        Argument::Expression(Expression::ThisExpression(_) | Expression::NullLiteral(_)) => {
-            matches!(second_arg, Argument::Expression(Expression::ArrayExpression(_)))
-                || matches!(second_arg, Argument::Expression(Expression::Identifier(ident)) if ident.name == "arguments")
+        Argument::ThisExpression(_) | Argument::NullLiteral(_) => {
+            matches!(second_arg, Argument::ArrayExpression(_))
+                || matches!(second_arg, Argument::Identifier(ident) if ident.name == "arguments")
         }
         _ => false,
     }
@@ -63,7 +63,7 @@ impl Rule for PreferReflectApply {
             return;
         };
 
-        let Expression::MemberExpression(member_expr) = &call_expr.callee else {
+        let Some(member_expr) = call_expr.callee.as_member_expression() else {
             return;
         };
 
@@ -80,16 +80,16 @@ impl Rule for PreferReflectApply {
         if is_static_property_name_equal(member_expr, "apply")
             && matches!(call_expr.arguments.as_slice(), [first, second] if is_apply_signature(first, second))
         {
-            ctx.diagnostic(PreferReflectApplyDiagnostic(call_expr.span));
+            ctx.diagnostic(prefer_reflect_apply_diagnostic(call_expr.span));
             return;
         }
 
         if is_static_property_name_equal(member_expr, "call") {
-            let Expression::MemberExpression(member_expr_obj) = member_expr.object() else {
+            let Some(member_expr_obj) = member_expr.object().as_member_expression() else {
                 return;
             };
             if is_static_property_name_equal(member_expr_obj, "apply") {
-                let Expression::MemberExpression(member_expr_obj_obj) = member_expr_obj.object()
+                let Some(member_expr_obj_obj) = member_expr_obj.object().as_member_expression()
                 else {
                     return;
                 };
@@ -101,7 +101,7 @@ impl Rule for PreferReflectApply {
                     if iden.name == "Function"
                         && matches!(call_expr.arguments.as_slice(), [_, second, third] if is_apply_signature(second, third))
                     {
-                        ctx.diagnostic(PreferReflectApplyDiagnostic(call_expr.span));
+                        ctx.diagnostic(prefer_reflect_apply_diagnostic(call_expr.span));
                     }
                 }
             }
@@ -144,5 +144,6 @@ fn test() {
         ("foo[\"apply\"](null, [42]);", None),
     ];
 
-    Tester::new(PreferReflectApply::NAME, pass, fail).test_and_snapshot();
+    Tester::new(PreferReflectApply::NAME, PreferReflectApply::PLUGIN, pass, fail)
+        .test_and_snapshot();
 }

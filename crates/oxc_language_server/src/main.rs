@@ -1,40 +1,45 @@
-mod linter;
-mod options;
+use std::{fmt::Debug, path::PathBuf, str::FromStr};
 
-use crate::linter::{DiagnosticReport, ServerLinter};
+use commands::LSP_COMMANDS;
+use futures::future::join_all;
 use globset::Glob;
 use ignore::gitignore::Gitignore;
 use log::{debug, error, info};
-use oxc_linter::{LintOptions, Linter};
+use rustc_hash::FxBuildHasher;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::path::PathBuf;
-use std::str::FromStr;
-
-use dashmap::DashMap;
-use futures::future::join_all;
 use tokio::sync::{Mutex, OnceCell, RwLock, SetError};
-use tower_lsp::jsonrpc::{Error, ErrorCode, Result};
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
-    CodeActionProviderCapability, CodeActionResponse, ConfigurationItem, Diagnostic,
-    DidChangeConfigurationParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams, InitializeResult,
-    InitializedParams, OneOf, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
-    WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
+use tower_lsp::{
+    Client, LanguageServer, LspService, Server,
+    jsonrpc::{Error, ErrorCode, Result},
+    lsp_types::{
+        CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
+        ConfigurationItem, Diagnostic, DidChangeConfigurationParams, DidChangeTextDocumentParams,
+        DidChangeWatchedFilesParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+        DidSaveTextDocumentParams, ExecuteCommandParams, InitializeParams, InitializeResult,
+        InitializedParams, NumberOrString, Position, Range, ServerInfo, TextEdit, Url,
+        WorkspaceEdit,
+    },
 };
-use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-#[derive(Debug)]
+use oxc_linter::{ConfigStoreBuilder, FixKind, LintOptions, Linter, Oxlintrc};
+
+use crate::capabilities::{CODE_ACTION_KIND_SOURCE_FIX_ALL_OXC, Capabilities};
+use crate::linter::error_with_position::DiagnosticReport;
+use crate::linter::server_linter::ServerLinter;
+
+mod capabilities;
+mod commands;
+mod linter;
+
+type ConcurrentHashMap<K, V> = papaya::HashMap<K, V, FxBuildHasher>;
+
 struct Backend {
     client: Client,
     root_uri: OnceCell<Option<Url>>,
     server_linter: RwLock<ServerLinter>,
-    diagnostics_report_map: DashMap<String, Vec<DiagnosticReport>>,
+    diagnostics_report_map: ConcurrentHashMap<String, Vec<DiagnosticReport>>,
     options: Mutex<Options>,
-    gitignore_glob: Mutex<Option<Gitignore>>,
+    gitignore_glob: Mutex<Vec<Gitignore>>,
 }
 #[derive(Debug, Serialize, Deserialize, Default, PartialEq, PartialOrd, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
@@ -44,14 +49,16 @@ enum Run {
     OnType,
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct Options {
     run: Run,
     enable: bool,
+    config_path: String,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { enable: true, run: Run::default() }
+        Self { enable: true, run: Run::default(), config_path: ".oxlintrc.json".into() }
     }
 }
 
@@ -66,6 +73,10 @@ impl Options {
             SyntheticRunLevel::Disable
         }
     }
+
+    fn get_config_path(&self) -> Option<PathBuf> {
+        if self.config_path.is_empty() { None } else { Some(PathBuf::from(&self.config_path)) }
+    }
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Clone, Copy)]
@@ -79,8 +90,6 @@ enum SyntheticRunLevel {
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         self.init(params.root_uri)?;
-        self.init_ignore_glob().await;
-        self.init_linter_config().await;
         let options = params.initialization_options.and_then(|mut value| {
             let settings = value.get_mut("settings")?.take();
             serde_json::from_value::<Options>(settings).ok()
@@ -91,31 +100,13 @@ impl LanguageServer for Backend {
             info!("language server version: {:?}", env!("CARGO_PKG_VERSION"));
             *self.options.lock().await = value;
         }
+
+        let oxlintrc = self.init_linter_config().await;
+        self.init_ignore_glob(oxlintrc).await;
         Ok(InitializeResult {
             server_info: Some(ServerInfo { name: "oxc".into(), version: None }),
             offset_encoding: None,
-            capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::FULL,
-                )),
-                workspace: Some(WorkspaceServerCapabilities {
-                    workspace_folders: Some(WorkspaceFoldersServerCapabilities {
-                        supported: Some(true),
-                        change_notifications: Some(OneOf::Left(true)),
-                    }),
-                    file_operations: None,
-                }),
-                code_action_provider: Some(CodeActionProviderCapability::Options(
-                    CodeActionOptions {
-                        code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
-                        work_done_progress_options: WorkDoneProgressOptions {
-                            work_done_progress: None,
-                        },
-                        resolve_provider: None,
-                    },
-                )),
-                ..ServerCapabilities::default()
-            },
+            capabilities: Capabilities::from(params.capabilities).into(),
         })
     }
 
@@ -142,16 +133,29 @@ impl LanguageServer for Backend {
                 options
             };
 
-        debug!("{:?}", &changed_options.get_lint_level());
-        if changed_options.get_lint_level() == SyntheticRunLevel::Disable {
+        let current_option = &self.options.lock().await.clone();
+
+        debug!(
+            "
+        configuration changed:
+        incoming: {changed_options:?}
+        current: {current_option:?}
+        "
+        );
+
+        if current_option.get_lint_level() != changed_options.get_lint_level()
+            && changed_options.get_lint_level() == SyntheticRunLevel::Disable
+        {
+            debug!("lint level change detected {:?}", &changed_options.get_lint_level());
             // clear all exists diagnostics when linter is disabled
-            let opened_files = self.diagnostics_report_map.iter().map(|k| k.key().to_string());
-            let cleared_diagnostics = opened_files
-                .into_iter()
+            let cleared_diagnostics = self
+                .diagnostics_report_map
+                .pin()
+                .keys()
                 .map(|uri| {
                     (
                         // should convert successfully, case the key is from `params.document.uri`
-                        Url::from_str(&uri)
+                        Url::from_str(uri)
                             .ok()
                             .and_then(|url| url.to_file_path().ok())
                             .expect("should convert to path"),
@@ -161,7 +165,25 @@ impl LanguageServer for Backend {
                 .collect::<Vec<_>>();
             self.publish_all_diagnostics(&cleared_diagnostics).await;
         }
-        *self.options.lock().await = changed_options;
+
+        *self.options.lock().await = changed_options.clone();
+
+        // revalidate the config and all open files, when lint level is not disabled and the config path is changed
+        if changed_options.get_lint_level() != SyntheticRunLevel::Disable
+            && changed_options
+                .get_config_path()
+                .is_some_and(|path| path.to_str().unwrap() != current_option.config_path)
+        {
+            info!("config path change detected {:?}", &changed_options.get_config_path());
+            self.init_linter_config().await;
+            self.revalidate_open_files().await;
+        }
+    }
+
+    async fn did_change_watched_files(&self, _params: DidChangeWatchedFilesParams) {
+        debug!("watched file did change");
+        self.init_linter_config().await;
+        self.revalidate_open_files().await;
     }
 
     async fn initialized(&self, _params: InitializedParams) {
@@ -209,7 +231,7 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let run_level = { self.options.lock().await.get_lint_level() };
-        if run_level < SyntheticRunLevel::OnType {
+        if run_level <= SyntheticRunLevel::Disable {
             return;
         }
         if self.is_ignored(&params.text_document.uri).await {
@@ -221,35 +243,127 @@ impl LanguageServer for Backend {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
-        self.diagnostics_report_map.remove(&uri);
+        self.diagnostics_report_map.pin().remove(&uri);
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = params.text_document.uri;
+        let is_source_fix_all_oxc = params
+            .context
+            .only
+            .is_some_and(|only| only.contains(&CODE_ACTION_KIND_SOURCE_FIX_ALL_OXC));
 
-        if let Some(value) = self.diagnostics_report_map.get(&uri.to_string()) {
-            if let Some(report) = value
-                .iter()
-                .find(|r| r.diagnostic.range == params.range && r.fixed_content.is_some())
-            {
-                let title =
-                    report.diagnostic.message.split(':').next().map_or_else(
-                        || "Fix this problem".into(),
-                        |s| format!("Fix this {s} problem"),
-                    );
+        let mut code_actions_vec: Vec<CodeActionOrCommand> = vec![];
+        if let Some(value) = self.diagnostics_report_map.pin().get(&uri.to_string()) {
+            let reports = value.iter().filter(|r| {
+                r.diagnostic.range == params.range
+                    || range_overlaps(params.range, r.diagnostic.range)
+            });
+            for report in reports {
+                // TODO: Would be better if we had exact rule name from the diagnostic instead of having to parse it.
+                let mut rule_name: Option<String> = None;
+                if let Some(NumberOrString::String(code)) = &report.diagnostic.code {
+                    let open_paren = code.chars().position(|c| c == '(');
+                    let close_paren = code.chars().position(|c| c == ')');
+                    if open_paren.is_some() && close_paren.is_some() {
+                        rule_name =
+                            Some(code[(open_paren.unwrap() + 1)..close_paren.unwrap()].to_string());
+                    }
+                }
 
-                let fixed_content = report.fixed_content.clone().unwrap();
+                if let Some(fixed_content) = &report.fixed_content {
+                    code_actions_vec.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: report.diagnostic.message.split(':').next().map_or_else(
+                            || "Fix this problem".into(),
+                            |s| format!("Fix this {s} problem"),
+                        ),
+                        kind: Some(if is_source_fix_all_oxc {
+                            CODE_ACTION_KIND_SOURCE_FIX_ALL_OXC
+                        } else {
+                            CodeActionKind::QUICKFIX
+                        }),
+                        is_preferred: Some(true),
+                        edit: Some(WorkspaceEdit {
+                            #[expect(clippy::disallowed_types)]
+                            changes: Some(std::collections::HashMap::from([(
+                                uri.clone(),
+                                vec![TextEdit {
+                                    range: fixed_content.range,
+                                    new_text: fixed_content.code.clone(),
+                                }],
+                            )])),
+                            ..WorkspaceEdit::default()
+                        }),
+                        disabled: None,
+                        data: None,
+                        diagnostics: None,
+                        command: None,
+                    }));
+                }
 
-                return Ok(Some(vec![CodeActionOrCommand::CodeAction(CodeAction {
-                    title,
+                code_actions_vec.push(
+                    // TODO: This CodeAction doesn't support disabling multiple rules by name for a given line.
+                    //  To do that, we need to read `report.diagnostic.range.start.line` and check if a disable comment already exists.
+                    //  If it does, it needs to be appended to instead of a completely new line inserted.
+                    CodeActionOrCommand::CodeAction(CodeAction {
+                        title: rule_name.clone().map_or_else(
+                            || "Disable oxlint for this line".into(),
+                            |s| format!("Disable {s} for this line"),
+                        ),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        is_preferred: Some(false),
+                        edit: Some(WorkspaceEdit {
+                            #[expect(clippy::disallowed_types)]
+                            changes: Some(std::collections::HashMap::from([(
+                                uri.clone(),
+                                vec![TextEdit {
+                                    range: Range {
+                                        start: Position {
+                                            line: report.diagnostic.range.start.line,
+                                            // TODO: character should be set to match the first non-whitespace character in the source text to match the existing indentation.
+                                            character: 0,
+                                        },
+                                        end: Position {
+                                            line: report.diagnostic.range.start.line,
+                                            // TODO: character should be set to match the first non-whitespace character in the source text to match the existing indentation.
+                                            character: 0,
+                                        },
+                                    },
+                                    new_text: rule_name.clone().map_or_else(
+                                        || "// eslint-disable-next-line\n".into(),
+                                        |s| format!("// eslint-disable-next-line {s}\n"),
+                                    ),
+                                }],
+                            )])),
+                            ..WorkspaceEdit::default()
+                        }),
+                        disabled: None,
+                        data: None,
+                        diagnostics: None,
+                        command: None,
+                    }),
+                );
+
+                code_actions_vec.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: rule_name.clone().map_or_else(
+                        || "Disable oxlint for this file".into(),
+                        |s| format!("Disable {s} for this file"),
+                    ),
                     kind: Some(CodeActionKind::QUICKFIX),
-                    is_preferred: Some(true),
+                    is_preferred: Some(false),
                     edit: Some(WorkspaceEdit {
-                        changes: Some(HashMap::from([(
-                            uri,
+                        #[expect(clippy::disallowed_types)]
+                        changes: Some(std::collections::HashMap::from([(
+                            uri.clone(),
                             vec![TextEdit {
-                                range: fixed_content.range,
-                                new_text: fixed_content.code,
+                                range: Range {
+                                    start: Position { line: 0, character: 0 },
+                                    end: Position { line: 0, character: 0 },
+                                },
+                                new_text: rule_name.clone().map_or_else(
+                                    || "// eslint-disable\n".into(),
+                                    |s| format!("// eslint-disable {s}\n"),
+                                ),
                             }],
                         )])),
                         ..WorkspaceEdit::default()
@@ -258,11 +372,27 @@ impl LanguageServer for Backend {
                     data: None,
                     diagnostics: None,
                     command: None,
-                })]));
+                }));
             }
         }
 
-        Ok(None)
+        if code_actions_vec.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(code_actions_vec))
+    }
+
+    async fn execute_command(
+        &self,
+        params: ExecuteCommandParams,
+    ) -> Result<Option<serde_json::Value>> {
+        let command = LSP_COMMANDS.iter().find(|c| c.command_id() == params.command);
+
+        return match command {
+            Some(c) => c.execute(self, params.arguments).await,
+            None => Err(Error::invalid_request()),
+        };
     }
 }
 
@@ -280,7 +410,7 @@ impl Backend {
         Ok(())
     }
 
-    async fn init_ignore_glob(&self) {
+    async fn init_ignore_glob(&self, oxlintrc: Option<Oxlintrc>) {
         let uri = self
             .root_uri
             .get()
@@ -294,22 +424,42 @@ impl Backend {
 
         let ignore_file_glob_set = builder.build().unwrap();
 
-        let mut gitignore_builder = ignore::gitignore::GitignoreBuilder::new(uri.path());
         let walk = ignore::WalkBuilder::new(uri.path())
             .ignore(true)
             .hidden(false)
             .git_global(false)
-            .build();
-        for entry in walk.flatten() {
-            if ignore_file_glob_set.is_match(entry.path()) {
-                gitignore_builder.add(entry.path());
+            .build()
+            .flatten();
+
+        let mut gitignore_globs = self.gitignore_glob.lock().await;
+        for entry in walk {
+            let ignore_file_path = entry.path();
+            if !ignore_file_glob_set.is_match(ignore_file_path) {
+                continue;
+            }
+
+            if let Some(ignore_file_dir) = ignore_file_path.parent() {
+                let mut builder = ignore::gitignore::GitignoreBuilder::new(ignore_file_dir);
+                builder.add(ignore_file_path);
+                if let Ok(gitignore) = builder.build() {
+                    gitignore_globs.push(gitignore);
+                }
             }
         }
 
-        *self.gitignore_glob.lock().await = gitignore_builder.build().ok();
+        if let Some(oxlintrc) = oxlintrc {
+            if !oxlintrc.ignore_patterns.is_empty() {
+                let mut builder =
+                    ignore::gitignore::GitignoreBuilder::new(oxlintrc.path.parent().unwrap());
+                for entry in &oxlintrc.ignore_patterns {
+                    builder.add_line(None, entry).expect("Failed to add ignore line");
+                }
+                gitignore_globs.push(builder.build().unwrap());
+            }
+        }
     }
 
-    #[allow(clippy::ptr_arg)]
+    #[expect(clippy::ptr_arg)]
     async fn publish_all_diagnostics(&self, result: &Vec<(PathBuf, Vec<Diagnostic>)>) {
         join_all(result.iter().map(|(path, diagnostics)| {
             self.client.publish_diagnostics(
@@ -321,36 +471,47 @@ impl Backend {
         .await;
     }
 
-    async fn init_linter_config(&self) {
+    async fn revalidate_open_files(&self) {
+        join_all(self.diagnostics_report_map.pin_owned().keys().map(|key| {
+            let url = Url::from_str(key).expect("should convert to path");
+
+            self.handle_file_update(url, None, None)
+        }))
+        .await;
+    }
+
+    async fn init_linter_config(&self) -> Option<Oxlintrc> {
         let Some(Some(uri)) = self.root_uri.get() else {
-            return;
+            return None;
         };
         let Ok(root_path) = uri.to_file_path() else {
-            return;
+            return None;
         };
         let mut config_path = None;
-        let rc_config = root_path.join(".eslintrc");
-        if rc_config.exists() {
-            config_path = Some(rc_config);
-        }
-        let rc_json_config = root_path.join(".eslintrc.json");
-        if rc_json_config.exists() {
-            config_path = Some(rc_json_config);
+        let config = root_path.join(self.options.lock().await.get_config_path().unwrap());
+        if config.exists() {
+            config_path = Some(config);
         }
         if let Some(config_path) = config_path {
             let mut linter = self.server_linter.write().await;
+            let config = Oxlintrc::from_file(&config_path)
+                .expect("should have initialized linter with new options");
+            let config_store = ConfigStoreBuilder::from_oxlintrc(true, config.clone())
+                .build()
+                .expect("failed to build config");
             *linter = ServerLinter::new_with_linter(
-                Linter::from_options(
-                    LintOptions::default().with_fix(true).with_config_path(Some(config_path)),
-                )
-                .expect("should initialized linter with new options"),
+                Linter::new(LintOptions::default(), config_store).with_fix(FixKind::SafeFix),
             );
+            return Some(config);
         }
+
+        None
     }
 
     async fn handle_file_update(&self, uri: Url, content: Option<String>, version: Option<i32>) {
         if let Some(Some(_root_uri)) = self.root_uri.get() {
-            if let Some(diagnostics) = self.server_linter.read().await.run_single(&uri, content) {
+            let diagnostics = self.server_linter.read().await.run_single(&uri, content);
+            if let Some(diagnostics) = diagnostics {
                 self.client
                     .publish_diagnostics(
                         uri.clone(),
@@ -359,7 +520,7 @@ impl Backend {
                     )
                     .await;
 
-                self.diagnostics_report_map.insert(uri.to_string(), diagnostics);
+                self.diagnostics_report_map.pin().insert(uri.to_string(), diagnostics);
             }
         }
     }
@@ -373,15 +534,19 @@ impl Backend {
         if !uri.path().starts_with(root_uri.path()) {
             return false;
         }
-        let Some(ref gitignore_globs) = *self.gitignore_glob.lock().await else {
-            return false;
-        };
-        let path = PathBuf::from(uri.path());
-        let ignored = gitignore_globs.matched_path_or_any_parents(&path, path.is_dir()).is_ignore();
-        if ignored {
-            debug!("ignored: {uri}");
+        let gitignore_globs = &(*self.gitignore_glob.lock().await);
+        for gitignore in gitignore_globs {
+            if let Ok(uri_path) = uri.to_file_path() {
+                if !uri_path.starts_with(gitignore.path()) {
+                    continue;
+                }
+                if gitignore.matched_path_or_any_parents(&uri_path, uri_path.is_dir()).is_ignore() {
+                    debug!("ignored: {uri}");
+                    return true;
+                }
+            }
         }
-        ignored
+        false
     }
 }
 
@@ -393,7 +558,7 @@ async fn main() {
     let stdout = tokio::io::stdout();
 
     let server_linter = ServerLinter::new();
-    let diagnostics_report_map = DashMap::new();
+    let diagnostics_report_map = ConcurrentHashMap::default();
 
     let (service, socket) = LspService::build(|client| Backend {
         client,
@@ -401,9 +566,13 @@ async fn main() {
         server_linter: RwLock::new(server_linter),
         diagnostics_report_map,
         options: Mutex::new(Options::default()),
-        gitignore_glob: Mutex::new(None),
+        gitignore_glob: Mutex::new(vec![]),
     })
     .finish();
 
     Server::new(stdin, stdout, socket).serve(service).await;
+}
+
+fn range_overlaps(a: Range, b: Range) -> bool {
+    a.start <= b.end && a.end >= b.start
 }

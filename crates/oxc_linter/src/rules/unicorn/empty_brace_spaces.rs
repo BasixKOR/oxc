@@ -1,17 +1,15 @@
 use oxc_ast::AstKind;
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::Error,
-};
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::Span;
 
-use crate::{context::LintContext, rule::Rule, AstNode, Fix};
+use crate::{AstNode, context::LintContext, rule::Rule};
 
-#[derive(Debug, Error, Diagnostic)]
-#[error("eslint-plugin-unicorn(empty-brace-spaces): No spaces inside empty pair of braces allowed")]
-#[diagnostic(severity(warning), help("There should be no spaces or new lines inside a pair of empty braces as it affects the overall readability of the code."))]
-struct EmptyBraceSpacesDiagnostic(#[label] pub Span);
+fn empty_brace_spaces_diagnostic(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("No spaces inside empty pair of braces allowed")
+        .with_help("There should be no spaces or new lines inside a pair of empty braces as it affects the overall readability of the code.")
+        .with_label(span)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct EmptyBraceSpaces;
@@ -30,24 +28,28 @@ declare_oxc_lint!(
     /// }
     /// ```
     EmptyBraceSpaces,
-    style
+    unicorn,
+    style,
+    fix
 );
 
 impl Rule for EmptyBraceSpaces {
     fn run<'a>(&self, node: &AstNode<'a>, ctx: &LintContext<'a>) {
         match node.kind() {
             AstKind::StaticBlock(static_block) => {
-                let Span { start, end } = static_block.span;
+                let start = static_block.span.start;
+                let end = static_block.span.end;
 
                 let static_leading_count = get_static_leading_count(static_block.span, ctx);
 
                 if static_block.body.is_empty()
                     && end - start > static_leading_count + 2
-                    && !ctx.semantic().trivias().has_comments_between(static_block.span)
+                    && !ctx.semantic().has_comments_between(static_block.span)
                 {
-                    ctx.diagnostic_with_fix(EmptyBraceSpacesDiagnostic(static_block.span), || {
-                        Fix::new("static {}", static_block.span)
-                    });
+                    ctx.diagnostic_with_fix(
+                        empty_brace_spaces_diagnostic(static_block.span),
+                        |fixer| fixer.replace(static_block.span, "static {}"),
+                    );
                 }
             }
             AstKind::ObjectExpression(obj) => {
@@ -62,29 +64,24 @@ impl Rule for EmptyBraceSpaces {
             AstKind::BlockStatement(block_stmt) => {
                 remove_empty_braces_spaces(ctx, block_stmt.body.is_empty(), block_stmt.span);
             }
-            AstKind::CatchClause(catch_clause) => {
-                remove_empty_braces_spaces(
-                    ctx,
-                    catch_clause.body.body.is_empty(),
-                    catch_clause.body.span,
-                );
-            }
             _ => (),
         };
     }
 }
 
 fn remove_empty_braces_spaces(ctx: &LintContext, is_empty_body: bool, span: Span) {
-    // dbg!(class);
-    let Span { start, end } = span;
+    let start = span.start;
+    let end = span.end;
 
-    if is_empty_body && end - start > 2 && !ctx.semantic().trivias().has_comments_between(span) {
+    if is_empty_body && end - start > 2 && !ctx.semantic().has_comments_between(span) {
         // length of "{}"
-        ctx.diagnostic_with_fix(EmptyBraceSpacesDiagnostic(span), || Fix::new("{}", span));
+        ctx.diagnostic_with_fix(empty_brace_spaces_diagnostic(span), |fixer| {
+            fixer.replace(span, "{}")
+        });
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation)]
 fn get_static_leading_count(span: Span, ctx: &LintContext) -> u32 {
     let src = span.source_text(ctx.source_text());
 
@@ -345,7 +342,7 @@ fn test() {
         ),
     ];
 
-    Tester::new_without_config(EmptyBraceSpaces::NAME, pass, fail)
+    Tester::new(EmptyBraceSpaces::NAME, EmptyBraceSpaces::PLUGIN, pass, fail)
         .expect_fix(fix)
         .test_and_snapshot();
 }
