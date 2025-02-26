@@ -1,18 +1,8 @@
-use miette::{miette, LabeledSpan};
-use oxc_ast::{ast::ArrayExpressionElement, AstKind};
-use oxc_diagnostics::{
-    miette::{self, Diagnostic, Severity},
-    thiserror::Error,
-};
+use oxc_ast::{AstKind, ast::ArrayExpressionElement};
+use oxc_diagnostics::{LabeledSpan, OxcDiagnostic};
 use oxc_macros::declare_oxc_lint;
-use oxc_span::Span;
 
-use crate::{context::LintContext, rule::Rule, AstNode};
-
-#[derive(Debug, Error, Diagnostic)]
-#[error("eslint(no-sparse-arrays): Unexpected comma in middle of array")]
-#[diagnostic(severity(warning), help("remove the comma or insert `undefined`"))]
-struct NoSparseArraysDiagnostic(#[label] pub Span);
+use crate::{AstNode, context::LintContext, rule::Rule};
 
 #[derive(Debug, Default, Clone)]
 pub struct NoSparseArrays;
@@ -24,14 +14,45 @@ declare_oxc_lint!(
     ///
     /// ### Why is this bad?
     ///
-    /// The confusion around sparse arrays is enough that it’s recommended to avoid using them unless you are certain that they are useful in your code.
+    /// Take the following example:
     ///
-    /// ### Example
+    /// ```javascript
+    /// const items = [,,];
+    /// ```
+    ///
+    /// While the items array in this example has a length of 2, there are actually
+    /// no values in items[0] or items[1]. The fact that the array literal is
+    /// valid with only commas inside, coupled with the length being set and
+    /// actual item values not being set, make sparse arrays confusing for many
+    /// developers.
+    ///
+    /// The confusion around sparse arrays is enough that it’s recommended to
+    /// avoid using them unless you are certain that they are useful in your
+    /// code.
+    ///
+    ///
+    /// ### Examples
+    ///
+    /// Examples of **incorrect** code for this rule:
     /// ```javascript
     /// var items = [,,];
+    /// ```
+    ///
+    /// ```javascript
     /// var colors = [ "red",, "blue" ];
     /// ```
+    ///
+    /// Examples of **correct** code for this rule:
+    /// ```javascript
+    /// var items = [];
+    /// ```
+    ///
+    /// // trailing comma (after the last element) is not a problem
+    /// ```javascript
+    /// var colors = [ "red", "blue", ];
+    /// ```
     NoSparseArrays,
+    eslint,
     correctness
 );
 
@@ -42,12 +63,12 @@ impl Rule for NoSparseArrays {
                 .elements
                 .iter()
                 .filter_map(|el| match el {
-                    ArrayExpressionElement::Elision(span) => Some(span),
+                    ArrayExpressionElement::Elision(elision) => Some(elision),
                     _ => None,
                 })
-                .map(|span| {
+                .map(|elision| {
                     LabeledSpan::at(
-                        (span.start as usize)..(span.start as usize),
+                        (elision.span.start as usize)..(elision.span.start as usize),
                         "unexpected comma",
                     )
                 })
@@ -55,12 +76,11 @@ impl Rule for NoSparseArrays {
 
             if !violations.is_empty() {
                 if violations.len() < 10 {
-                    ctx.diagnostic(miette!(
-                        severity = Severity::Warning,
-                        labels = violations,
-                        help = "remove the comma or insert `undefined`",
-                        "eslint(no-sparse-arrays): Unexpected comma in middle of array"
-                    ));
+                    ctx.diagnostic(
+                        OxcDiagnostic::warn("Unexpected comma in middle of array")
+                            .with_help("remove the comma or insert `undefined`")
+                            .with_labels(violations),
+                    );
                 } else {
                     let span = if (array_expr.span.end - array_expr.span.start) < 50 {
                         LabeledSpan::at(array_expr.span, "the array here")
@@ -71,13 +91,14 @@ impl Rule for NoSparseArrays {
                         )
                     };
 
-                    ctx.diagnostic(miette!(
-                        severity = Severity::Warning,
-                        labels = vec![span],
-                        help = "remove the comma or insert `undefined`",
-                        "eslint(no-sparse-arrays): {} unexpected commas in middle of array",
-                        violations.len()
-                    ));
+                    ctx.diagnostic(
+                        OxcDiagnostic::warn(format!(
+                            "{} unexpected commas in middle of array",
+                            violations.len()
+                        ))
+                        .with_help("remove the comma or insert `undefined`")
+                        .with_label(span),
+                    );
                 }
             }
         }
@@ -88,7 +109,7 @@ impl Rule for NoSparseArrays {
 fn test() {
     use crate::tester::Tester;
 
-    let pass = vec!["var a = [ 1, 2, ]"];
+    let pass = vec!["var a = [ 1, 2, ]", "var a = [];"];
 
     let fail = vec![
         "var a = [,];",
@@ -106,5 +127,5 @@ fn test() {
         , , , , , , , , , , , , , , , , , , ,  2];",
     ];
 
-    Tester::new_without_config(NoSparseArrays::NAME, pass, fail).test_and_snapshot();
+    Tester::new(NoSparseArrays::NAME, NoSparseArrays::PLUGIN, pass, fail).test_and_snapshot();
 }

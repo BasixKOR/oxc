@@ -1,25 +1,23 @@
-mod ts_fixtures;
-
-#[cfg(not(target_env = "msvc"))]
-#[global_allocator]
-static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
-
-#[cfg(target_os = "windows")]
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
 use oxc_transform_conformance::{TestRunner, TestRunnerOptions};
 use pico_args::Arguments;
-use ts_fixtures::TypeScriptFixtures;
 
 fn main() {
     let mut args = Arguments::from_env();
 
     let options = TestRunnerOptions {
+        debug: args.contains("--debug"),
         filter: args.opt_value_from_str("--filter").unwrap(),
+        r#override: args.contains("--override"),
         exec: args.contains("--exec"),
     };
 
-    TestRunner::new(options.clone()).run();
-    TypeScriptFixtures::new(options).run();
+    if options.r#override {
+        debug_assert!(
+            options.filter.is_some(),
+            "Cannot use `--override` without a specific `--filter`, because there's no
+            doubt about it you do not want to override all Babel's tests"
+        );
+    }
+
+    TestRunner::new(options).run();
 }

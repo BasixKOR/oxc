@@ -1,20 +1,19 @@
+use std::f64::consts as f64;
+
 // Based on https://github.com/rust-lang/rust-clippy//blob/c9a43b18f11219fa70fe632b29518581fcd589c8/clippy_lints/src/approx_const.rs
 // https://rust-lang.github.io/rust-clippy/master/#approx_constant
 use oxc_ast::AstKind;
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::{self, Error},
-};
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::Span;
-use std::f64::consts as f64;
 
-use crate::{context::LintContext, rule::Rule, AstNode};
+use crate::{AstNode, context::LintContext, rule::Rule};
 
-#[derive(Debug, Error, Diagnostic)]
-#[error("oxc(approx-constant): Approximate value of `{1}` found.")]
-#[diagnostic(severity(warning), help("Use `Math.{1}` instead"))]
-struct ApproxConstantDiagnostic(#[label] pub Span, pub &'static str);
+fn approx_constant_diagnostic(span: Span, method_name: &str) -> OxcDiagnostic {
+    OxcDiagnostic::warn(format!("Approximate value of `{method_name}` found."))
+        .with_help(format!("Use `Math.{method_name}` instead"))
+        .with_label(span)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct ApproxConstant;
@@ -22,29 +21,39 @@ pub struct ApproxConstant;
 declare_oxc_lint!(
     /// ### What it does
     ///
-    /// Disallows the use of approximate constants, instead preferring the use of the constants in the `Math` object.
+    /// Disallows the use of approximate constants, instead preferring the use
+    /// of the constants in the `Math` object.
     ///
     /// ### Why is this bad?
     ///
     /// Approximate constants are not as accurate as the constants in the `Math` object.
     ///
     /// ### Example
+    ///
+    /// Examples of **incorrect** code for this rule:
     /// ```javascript
+    /// let log10e = 0.434294
+    /// ```
+    ///
+    /// Examples of **correct** code for this rule:
+    /// ```javascript
+    /// let log10e = Math.LOG10E
     /// ```
     ApproxConstant,
+    oxc,
     suspicious
 );
 
 impl Rule for ApproxConstant {
     fn run<'a>(&self, node: &AstNode<'a>, ctx: &LintContext<'a>) {
-        let AstKind::NumberLiteral(number_literal) = node.kind() else {
+        let AstKind::NumericLiteral(number_literal) = node.kind() else {
             return;
         };
 
         let number_lit_str = number_literal.value.to_string();
         for (constant, name, min_digits) in &KNOWN_CONSTS {
             if is_approx_const(*constant, &number_lit_str, *min_digits) {
-                ctx.diagnostic(ApproxConstantDiagnostic(number_literal.span, name));
+                ctx.diagnostic(approx_constant_diagnostic(number_literal.span, name));
             }
         }
     }
@@ -92,5 +101,5 @@ fn test() {
         "let sqrt2 = 1.414213",  // SQRT2
     ];
 
-    Tester::new_without_config(ApproxConstant::NAME, pass, fail).test_and_snapshot();
+    Tester::new(ApproxConstant::NAME, ApproxConstant::PLUGIN, pass, fail).test_and_snapshot();
 }

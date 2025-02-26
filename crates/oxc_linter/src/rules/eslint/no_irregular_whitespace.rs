@@ -1,16 +1,14 @@
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::Error,
-};
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::Span;
 
 use crate::{context::LintContext, rule::Rule};
 
-#[derive(Debug, Error, Diagnostic)]
-#[error("eslint(no-irregular-whitespace): Unexpected irregular whitespace")]
-#[diagnostic(severity(warning), help("Try to remove the irregular whitespace"))]
-struct NoIrregularWhitespaceDiagnostic(#[label] pub Span);
+fn no_irregular_whitespace_diagnostic(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("Unexpected irregular whitespace")
+        .with_help("Try to remove the irregular whitespace")
+        .with_label(span)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct NoIrregularWhitespace;
@@ -30,18 +28,20 @@ declare_oxc_lint!(
     /// }
     /// ```
     NoIrregularWhitespace,
+    eslint,
     correctness
 );
 
 impl Rule for NoIrregularWhitespace {
     fn run_once(&self, ctx: &LintContext) {
-        let irregular_whitespaces = ctx.semantic().trivias().irregular_whitespaces();
+        let irregular_whitespaces = ctx.semantic().irregular_whitespaces();
         for irregular_whitespace in irregular_whitespaces {
-            ctx.diagnostic(NoIrregularWhitespaceDiagnostic(*irregular_whitespace));
+            ctx.diagnostic(no_irregular_whitespace_diagnostic(*irregular_whitespace));
         }
     }
 }
 
+#[expect(clippy::unicode_not_nfc, clippy::invisible_characters)]
 #[test]
 fn test() {
     use crate::tester::Tester;
@@ -76,8 +76,8 @@ fn test() {
         (r"' ';", None),
         (r"'᠎';", None),
         (r"'﻿';", None),
-        // ("' ';", None), lint error
-        // (r"' ';", None), lint error
+        ("' ';", None),
+        (r"' ';", None),
         (r"' ';", None),
         (r"' ';", None),
         (r"' ';", None),
@@ -87,7 +87,7 @@ fn test() {
         (r"' ';", None),
         (r"' ';", None),
         (r"' ';", None),
-        // (r"'​';", None), lint error
+        (r"'​';", None),
         (r"'\ ';", None),
         (r"'\ ';", None),
         (r"' ';", None),
@@ -227,12 +227,12 @@ fn test() {
     ];
 
     let fail = vec![
-        // (r"var any  = 'thing';", None),
-        // (r"var any  = 'thing';", None),
+        (r"var any  = 'thing';", None),
+        (r"var any  = 'thing';", None),
         (r"var any   = 'thing';", None),
         (r"var any ﻿ = 'thing';", None),
-        // (r"var any   = 'thing';", None),
-        // (r"var any   = 'thing';", None),
+        (r"var any   = 'thing';", None),
+        (r"var any   = 'thing';", None),
         (r"var any   = 'thing';", None),
         (r"var any   = 'thing';", None),
         (r"var any   = 'thing';", None),
@@ -242,16 +242,16 @@ fn test() {
         (r"var any   = 'thing';", None),
         (r"var any   = 'thing';", None),
         (r"var any   = 'thing';", None),
-        // (r"var any   = 'thing';", None),
-        // (r"var any   = 'thing';", None),
+        (r"var any   = 'thing';", None),
+        (r"var any   = 'thing';", None),
         (r"var any   = 'thing';", None),
         (r"var any   = 'thing';", None),
         (r"var any 　 = 'thing';", None),
-        // (
-        //     r"var a = 'b', c = 'd',
-        // 	e = 'f' ",
-        //     None,
-        // ),
+        (
+            r"var a = 'b', c = 'd',
+          e = 'f' ",
+            None,
+        ),
         (
             r"var any 　 = 'thing', other 　 = 'thing';
 			var third 　 = 'thing';",
@@ -346,42 +346,42 @@ fn test() {
 			　",
             Some(serde_json::json!([{ "skipTemplates": true }])),
         ),
-        // (r"var foo =  bar;", None),
-        // (r"var foo =bar;", None),
-        // (r"var foo =  bar;", None),
-        // (r"var foo =  bar;", None),
-        // (r"var foo =   bar;", None),
-        // (r"var foo = bar;", None),
-        // (r"", None),
+        (r"var foo =  bar;", None),
+        (r"var foo =bar;", None),
+        (r"var foo =  bar;", None),
+        (r"var foo =  bar;", None),
+        (r"var foo =   bar;", None),
+        (r"var foo = bar;", None),
+        (r"", None),
         ("   ", None),
         // (
-        //     r"var foo =
-        // 	bar;",
-        //     None,
+        // r"var foo =
+        // bar;",
+        // None,
         // ),
-        // (
-        //     r"var foo =
-        // 	bar;",
-        //     None,
-        // ),
-        // (
-        //     r"var foo =
-        // 	bar
-        // 	;
-        // 	",
-        //     None,
-        // ),
-        // (r"var foo =  bar;", None),
-        // (r"var foo =  bar;", None),
-        // (r"var foo = bar; ", None),
-        // (r" ", None),
-        // (r"foo  ", None),
-        // (r"foo  ", None),
-        // (
-        //     r"foo
-        // 	 ",
-        //     None,
-        // ),
+        (
+            r"var foo =
+        bar;",
+            None,
+        ),
+        (
+            r"var foo =
+        bar
+        ;
+        ",
+            None,
+        ),
+        (r"var foo =  bar;", None),
+        (r"var foo =  bar;", None),
+        (r"var foo = bar; ", None),
+        (r" ", None),
+        (r"foo  ", None),
+        (r"foo  ", None),
+        (
+            r"foo
+         ",
+            None,
+        ),
         // (r"foo ", None),
         // (r"<div></div>;", None),
         // (r"<div></div>;", None),
@@ -406,5 +406,6 @@ fn test() {
         // (r"<div>　</div>;", None),
     ];
 
-    Tester::new(NoIrregularWhitespace::NAME, pass, fail).test_and_snapshot();
+    Tester::new(NoIrregularWhitespace::NAME, NoIrregularWhitespace::PLUGIN, pass, fail)
+        .test_and_snapshot();
 }

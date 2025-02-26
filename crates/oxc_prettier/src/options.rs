@@ -3,9 +3,9 @@ use std::str::FromStr;
 /// Prettier Options
 ///
 /// References
-/// * https://prettier.io/docs/en/options
-/// * https://github.com/prettier/prettier/blob/main/src/main/core-options.evaluate.js
-/// * https://github.com/prettier/prettier/blob/main/src/language-js/options.js
+/// * <https://prettier.io/docs/en/options>
+/// * <https://github.com/prettier/prettier/blob/3.3.3/src/main/core-options.evaluate.js>
+/// * <https://github.com/prettier/prettier/blob/3.3.3/src/language-js/options.js>
 #[derive(Debug, Clone, Copy)]
 pub struct PrettierOptions {
     /* Global Options */
@@ -47,10 +47,16 @@ pub struct PrettierOptions {
     pub trailing_comma: TrailingComma,
 
     /// Print spaces between brackets in object literals.
+    ///
     /// * true - Example: `{ foo: bar }`.
     /// * false - Example: `{foo: bar}`.
+    ///
     /// Default: true
     pub bracket_spacing: bool,
+
+    /// Configure how wraps object literals when they could fit on one line or span multiple lines.
+    /// Default: [ObjectWrap::Preserve]
+    pub object_wrap: ObjectWrap,
 
     /// Put the `>` of a multi-line HTML (HTML, JSX) element at the end of the last line
     /// instead of being alone on the next line (does not apply to self closing elements).
@@ -75,6 +81,7 @@ impl Default for PrettierOptions {
             jsx_single_quote: false,
             trailing_comma: TrailingComma::default(),
             bracket_spacing: true,
+            object_wrap: ObjectWrap::default(),
             bracket_same_line: false,
             arrow_parens: ArrowParens::default(),
         }
@@ -126,10 +133,15 @@ pub enum QuoteProps {
 }
 
 impl QuoteProps {
-    pub fn is_preserve(self) -> bool {
+    pub fn as_needed(self) -> bool {
+        matches!(self, Self::AsNeeded)
+    }
+
+    pub fn preserve(self) -> bool {
         matches!(self, Self::Preserve)
     }
-    pub fn is_consistent(self) -> bool {
+
+    pub fn consistent(self) -> bool {
         matches!(self, Self::Consistent)
     }
 }
@@ -180,6 +192,33 @@ impl FromStr for TrailingComma {
             "all" => Self::All,
             "es5" => Self::ES5,
             "none" => Self::None,
+            _ => Self::default(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub enum ObjectWrap {
+    /// Keep as multi-line, if there is a newline between the opening brace and first property.
+    #[default]
+    Preserve,
+    /// Fit to a single line when possible.
+    Collapse,
+}
+
+impl ObjectWrap {
+    pub fn is_preserve(self) -> bool {
+        matches!(self, Self::Preserve)
+    }
+}
+
+impl FromStr for ObjectWrap {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "preserve" => Self::Preserve,
+            "collapse" => Self::Collapse,
             _ => Self::default(),
         })
     }

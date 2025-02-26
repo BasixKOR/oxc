@@ -1,32 +1,29 @@
-use oxc_ast::{ast::JSXElementName, AstKind};
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::Error,
-};
+use oxc_ast::AstKind;
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
-use oxc_span::Span;
+use oxc_span::{CompactStr, Span};
 
 use crate::{
+    AstNode,
     context::LintContext,
     rule::Rule,
-    utils::{is_hidden_from_screen_reader, object_has_accessible_child},
-    AstNode,
+    utils::{get_element_type, is_hidden_from_screen_reader, object_has_accessible_child},
 };
 
-#[derive(Debug, Error, Diagnostic)]
-#[error("eslint(heading-has-content): Headings must have content and the content must be accessible by a screen reader.")]
-#[diagnostic(
-    severity(warning),
-    help("Provide screen reader accessible content when using heading elements.")
-)]
-struct HeadingHasContentDiagnostic(#[label] pub Span);
+fn heading_has_content_diagnostic(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn(
+        "Headings must have content and the content must be accessible by a screen reader.",
+    )
+    .with_help("Provide screen reader accessible content when using heading elements.")
+    .with_label(span)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct HeadingHasContent(Box<HeadingHasContentConfig>);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HeadingHasContentConfig {
-    components: Option<Vec<String>>,
+    components: Option<Vec<CompactStr>>,
 }
 
 impl std::ops::Deref for HeadingHasContent {
@@ -51,15 +48,19 @@ declare_oxc_lint!(
     /// this could either confuse users or even prevent them
     /// from accessing information on the page's structure.
     ///
-    /// ### Example
-    /// ```javascript
-    /// // Bad
-    /// <h1 />
+    /// ### Examples
     ///
-    /// // Good
+    /// Examples of **incorrect** code for this rule:
+    /// ```jsx
+    /// <h1 />
+    /// ```
+    ///
+    /// Examples of **correct** code for this rule:
+    /// ```jsx
     /// <h1>Foo</h1>
     /// ```
     HeadingHasContent,
+    jsx_a11y,
     correctness
 );
 
@@ -74,10 +75,7 @@ impl Rule for HeadingHasContent {
                 .and_then(|v| v.get("components"))
                 .and_then(serde_json::Value::as_array)
                 .map(|v| {
-                    v.iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .map(ToString::to_string)
-                        .collect()
+                    v.iter().filter_map(serde_json::Value::as_str).map(CompactStr::from).collect()
                 }),
         }))
     }
@@ -87,13 +85,10 @@ impl Rule for HeadingHasContent {
             return;
         };
 
-        let JSXElementName::Identifier(iden) = &jsx_el.name else {
-            return;
-        };
+        let name = get_element_type(ctx, jsx_el);
+        let name = name.as_ref();
 
-        let name = iden.name.as_str();
-
-        if !DEFAULT_COMPONENTS.iter().any(|&comp| comp == name)
+        if DEFAULT_COMPONENTS.binary_search(&name).is_err()
             && !self
                 .components
                 .as_ref()
@@ -102,18 +97,17 @@ impl Rule for HeadingHasContent {
             return;
         }
 
-        let maybe_parent = ctx.nodes().parent_node(node.id()).map(oxc_semantic::AstNode::kind);
-        if let Some(AstKind::JSXElement(parent)) = maybe_parent {
-            if object_has_accessible_child(parent) {
+        if let Some(AstKind::JSXElement(parent)) = ctx.nodes().parent_kind(node.id()) {
+            if object_has_accessible_child(ctx, parent) {
                 return;
             }
         }
 
-        if is_hidden_from_screen_reader(jsx_el) {
+        if is_hidden_from_screen_reader(ctx, jsx_el) {
             return;
         }
 
-        ctx.diagnostic(HeadingHasContentDiagnostic(jsx_el.span));
+        ctx.diagnostic(heading_has_content_diagnostic(jsx_el.span));
     }
 }
 
@@ -127,51 +121,63 @@ fn test() {
         }])
     }
 
+    fn settings() -> serde_json::Value {
+        serde_json::json!({
+          "settings": { "jsx-a11y": {
+            "components": {
+              "CustomInput": "input",
+              "Title": "h1",
+              "Heading": "h2",
+            },
+          } }
+        })
+    }
+
     let pass = vec![
         // DEFAULT ELEMENT TESTS
-        (r"<h1>Foo</h1>", None),
-        (r"<h2>Foo</h2>", None),
-        (r"<h3>Foo</h3>", None),
-        (r"<h4>Foo</h4>", None),
-        (r"<h5>Foo</h5>", None),
-        (r"<h6>Foo</h6>", None),
-        (r"<h6>123</h6>", None),
-        (r"<h1><Bar /></h1>", None),
-        (r"<h1>{foo}</h1>", None),
-        (r"<h1>{foo.bar}</h1>", None),
-        (r#"<h1 dangerouslySetInnerHTML={{ __html: "foo" }} />"#, None),
-        (r"<h1 children={children} />", None),
+        (r"<h1>Foo</h1>", None, None),
+        (r"<h2>Foo</h2>", None, None),
+        (r"<h3>Foo</h3>", None, None),
+        (r"<h4>Foo</h4>", None, None),
+        (r"<h5>Foo</h5>", None, None),
+        (r"<h6>Foo</h6>", None, None),
+        (r"<h6>123</h6>", None, None),
+        (r"<h1><Bar /></h1>", None, None),
+        (r"<h1>{foo}</h1>", None, None),
+        (r"<h1>{foo.bar}</h1>", None, None),
+        (r#"<h1 dangerouslySetInnerHTML={{ __html: "foo" }} />"#, None, None),
+        (r"<h1 children={children} />", None, None),
         // CUSTOM ELEMENT TESTS FOR COMPONENTS OPTION
-        (r"<Heading>Foo</Heading>", Some(components())),
-        (r"<Title>Foo</Title>", Some(components())),
-        (r"<Heading><Bar /></Heading>", Some(components())),
-        (r"<Heading>{foo}</Heading>", Some(components())),
-        (r"<Heading>{foo.bar}</Heading>", Some(components())),
-        (r#"<Heading dangerouslySetInnerHTML={{ __html: "foo" }} />"#, Some(components())),
-        (r"<Heading children={children} />", Some(components())),
-        (r"<h1 aria-hidden />", Some(components())),
-        // TODO: When polymorphic components are supported
+        (r"<Heading>Foo</Heading>", Some(components()), None),
+        (r"<Title>Foo</Title>", Some(components()), None),
+        (r"<Heading><Bar /></Heading>", Some(components()), None),
+        (r"<Heading>{foo}</Heading>", Some(components()), None),
+        (r"<Heading>{foo.bar}</Heading>", Some(components()), None),
+        (r#"<Heading dangerouslySetInnerHTML={{ __html: "foo" }} />"#, Some(components()), None),
+        (r"<Heading children={children} />", Some(components()), None),
+        (r"<h1 aria-hidden />", Some(components()), None),
         // CUSTOM ELEMENT TESTS FOR COMPONENTS SETTINGS
-        // (r"<Heading>Foo</Heading>", None),
-        // (r#"<h1><CustomInput type="hidden" /></h1>"#, None),
+        (r"<Heading>Foo</Heading>", None, Some(settings())),
+        (r#"<h1><CustomInput type="hidden" /></h1>"#, None, None),
     ];
 
     let fail = vec![
         // DEFAULT ELEMENT TESTS
-        (r"<h1 />", None),
-        (r"<h1><Bar aria-hidden /></h1>", None),
-        (r"<h1>{undefined}</h1>", None),
-        (r"<h1><></></h1>", None),
-        (r#"<h1><input type="hidden" /></h1>"#, None),
+        (r"<h1 />", None, None),
+        (r"<h1><Bar aria-hidden /></h1>", None, None),
+        (r"<h1>{undefined}</h1>", None, None),
+        (r"<h1><></></h1>", None, None),
+        (r#"<h1><input type="hidden" /></h1>"#, None, None),
         // CUSTOM ELEMENT TESTS FOR COMPONENTS OPTION
-        (r"<Heading />", Some(components())),
-        (r"<Heading><Bar aria-hidden /></Heading>", Some(components())),
-        (r"<Heading>{undefined}</Heading>", Some(components())),
-        // TODO: When polymorphic components are supported
+        (r"<Heading />", Some(components()), None),
+        (r"<Heading><Bar aria-hidden /></Heading>", Some(components()), None),
+        (r"<Heading>{undefined}</Heading>", Some(components()), None),
         // CUSTOM ELEMENT TESTS FOR COMPONENTS SETTINGS
-        // (r"<Heading />", None),
-        // (r#"<h1><CustomInput type="hidden" /></h1>"#, None),
+        (r"<Heading />", None, Some(settings())),
+        (r#"<h1><CustomInput type="hidden" /></h1>"#, None, Some(settings())),
     ];
 
-    Tester::new(HeadingHasContent::NAME, pass, fail).with_jsx_a11y_plugin(true).test_and_snapshot();
+    Tester::new(HeadingHasContent::NAME, HeadingHasContent::PLUGIN, pass, fail)
+        .with_jsx_a11y_plugin(true)
+        .test_and_snapshot();
 }

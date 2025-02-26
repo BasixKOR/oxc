@@ -1,24 +1,20 @@
 // Based on https://github.com/rust-lang/rust-clippy//blob/00e9372987755dece96561ef2eef0785c8742e55/clippy_lints/src/operators/erasing_op.rs
 use oxc_ast::{
-    ast::{BinaryExpression, Expression},
     AstKind,
+    ast::{BinaryExpression, Expression},
 };
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::Error,
-};
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::Span;
 use oxc_syntax::operator::BinaryOperator;
 
-use crate::{context::LintContext, rule::Rule, AstNode};
+use crate::{AstNode, context::LintContext, rule::Rule};
 
-#[derive(Debug, Error, Diagnostic)]
-#[error(
-    "oxc(erasing-op): Unexpected erasing operation. This expression will always evaluate to zero."
-)]
-#[diagnostic(severity(warning), help("This is most likely not the intended outcome. Consider removing the operation, or directly assigning zero to the variable"))]
-struct ErasingOpDiagnostic(#[label] pub Span);
+fn erasing_op_diagnostic(span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("Unexpected erasing operation. This expression will always evaluate to zero.")
+        .with_help("This is most likely not the intended outcome. Consider removing the operation, or directly assigning zero to the variable")
+        .with_label(span)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct ErasingOp;
@@ -35,22 +31,29 @@ declare_oxc_lint!(
     /// The whole expression can be replaced by zero. This is most likely not the intended outcome and should probably be corrected.
     ///
     /// ### Example
+    ///
+    /// Examples of **incorrect** code for this rule:
     /// ```javascript
-    /// // Bad
     /// let x = 1;
     /// let y = x * 0;
+    /// ```
     ///
-    /// // Good
+    /// Examples of **correct** code for this rule:
+    /// ```javascript
     /// let x = 1;
     /// let y = 0;
     /// ```
     ErasingOp,
-    correctness
+    oxc,
+    correctness,
+    suggestion
 );
 
 impl Rule for ErasingOp {
     fn run<'a>(&self, node: &AstNode<'a>, ctx: &LintContext<'a>) {
-        let AstKind::BinaryExpression(binary_expression) = node.kind() else { return };
+        let AstKind::BinaryExpression(binary_expression) = node.kind() else {
+            return;
+        };
 
         match binary_expression.operator {
             BinaryOperator::Multiplication | BinaryOperator::BitwiseAnd => {
@@ -58,6 +61,9 @@ impl Rule for ErasingOp {
                 check_op(binary_expression, &binary_expression.right, ctx);
             }
             BinaryOperator::Division => {
+                if is_number_value(&binary_expression.right, 0.0) {
+                    return;
+                }
                 check_op(binary_expression, &binary_expression.left, ctx);
             }
             _ => (),
@@ -66,7 +72,7 @@ impl Rule for ErasingOp {
 }
 
 fn is_number_value(expr: &Expression, value: f64) -> bool {
-    if let Expression::NumberLiteral(number_literal) = expr {
+    if let Expression::NumericLiteral(number_literal) = expr.without_parentheses() {
         (number_literal.value - value).abs() < f64::EPSILON
     } else {
         false
@@ -79,7 +85,9 @@ fn check_op<'a, 'b>(
     ctx: &LintContext<'a>,
 ) {
     if is_number_value(op, 0.0) {
-        ctx.diagnostic(ErasingOpDiagnostic(binary_expression.span));
+        ctx.diagnostic_with_suggestion(erasing_op_diagnostic(binary_expression.span), |fixer| {
+            fixer.replace(binary_expression.span, "0")
+        });
     }
 }
 
@@ -87,9 +95,11 @@ fn check_op<'a, 'b>(
 fn test() {
     use crate::tester::Tester;
 
-    let pass = vec!["x * 1;", "1 * x;", "5 & x;", "x / 1;", "1 / x;"];
+    let pass = vec!["x * 1;", "1 * x;", "5 & x;", "x / 1;", "1 / x;", "0 / 0"];
 
     let fail = vec!["x * 0;", "0 * x;", "0 & x;", "0 / x;"];
 
-    Tester::new_without_config(ErasingOp::NAME, pass, fail).test_and_snapshot();
+    let fix = vec![("x * 0;", "0;"), ("0 * x;", "0;"), ("0 & x;", "0;"), ("0 / x;", "0;")];
+
+    Tester::new(ErasingOp::NAME, ErasingOp::PLUGIN, pass, fail).expect_fix(fix).test_and_snapshot();
 }

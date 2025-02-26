@@ -1,57 +1,79 @@
 use std::{
-    cell::{Ref, RefCell, RefMut},
+    cell::RefCell,
     mem,
-    rc::Rc,
+    path::{Path, PathBuf},
 };
 
-use oxc_ast::AstBuilder;
-use oxc_diagnostics::Error;
-use oxc_semantic::{ScopeId, ScopeTree, Semantic, SymbolId, SymbolTable};
-use oxc_span::{Atom, SourceType};
+use oxc_diagnostics::OxcDiagnostic;
+use oxc_span::SourceType;
 
-#[derive(Clone)]
-pub struct TransformerCtx<'a> {
-    pub ast: Rc<AstBuilder<'a>>,
-    semantic: Rc<RefCell<Semantic<'a>>>,
-    errors: Rc<RefCell<Vec<Error>>>,
+use crate::{
+    CompilerAssumptions, Module, TransformOptions,
+    common::{
+        helper_loader::HelperLoaderStore, module_imports::ModuleImportsStore,
+        statement_injector::StatementInjectorStore, top_level_statements::TopLevelStatementsStore,
+        var_declarations::VarDeclarationsStore,
+    },
+};
+
+pub struct TransformCtx<'a> {
+    errors: RefCell<Vec<OxcDiagnostic>>,
+
+    /// <https://babeljs.io/docs/options#filename>
+    pub filename: String,
+
+    /// Source path in the form of `<CWD>/path/to/file/input.js`
+    pub source_path: PathBuf,
+
+    pub source_type: SourceType,
+
+    pub source_text: &'a str,
+
+    pub module: Module,
+
+    pub assumptions: CompilerAssumptions,
+
+    // Helpers
+    /// Manage helper loading
+    pub helper_loader: HelperLoaderStore<'a>,
+    /// Manage import statement globally
+    pub module_imports: ModuleImportsStore<'a>,
+    /// Manage inserting `var` statements globally
+    pub var_declarations: VarDeclarationsStore<'a>,
+    /// Manage inserting statements immediately before or after the target statement
+    pub statement_injector: StatementInjectorStore<'a>,
+    /// Manage inserting statements at top of program globally
+    pub top_level_statements: TopLevelStatementsStore<'a>,
 }
 
-impl<'a> TransformerCtx<'a> {
-    pub fn new(ast: Rc<AstBuilder<'a>>, semantic: Rc<RefCell<Semantic<'a>>>) -> Self {
-        Self { ast, semantic, errors: Rc::new(RefCell::new(vec![])) }
+impl TransformCtx<'_> {
+    pub fn new(source_path: &Path, options: &TransformOptions) -> Self {
+        let filename = source_path
+            .file_stem() // omit file extension
+            .map_or_else(|| String::from("unknown"), |name| name.to_string_lossy().to_string());
+
+        Self {
+            errors: RefCell::new(vec![]),
+            filename,
+            source_path: source_path.to_path_buf(),
+            source_type: SourceType::default(),
+            source_text: "",
+            module: options.env.module,
+            assumptions: options.assumptions,
+            helper_loader: HelperLoaderStore::new(&options.helper_loader),
+            module_imports: ModuleImportsStore::new(),
+            var_declarations: VarDeclarationsStore::new(),
+            statement_injector: StatementInjectorStore::new(),
+            top_level_statements: TopLevelStatementsStore::new(),
+        }
     }
 
-    pub fn semantic(&self) -> Ref<'_, Semantic<'a>> {
-        self.semantic.borrow()
-    }
-
-    pub fn symbols(&self) -> Ref<'_, SymbolTable> {
-        Ref::map(self.semantic.borrow(), |semantic| semantic.symbols())
-    }
-
-    pub fn scopes(&self) -> Ref<'_, ScopeTree> {
-        Ref::map(self.semantic.borrow(), |semantic| semantic.scopes())
-    }
-
-    pub fn scopes_mut(&self) -> RefMut<'_, ScopeTree> {
-        RefMut::map(self.semantic.borrow_mut(), |semantic| semantic.scopes_mut())
-    }
-
-    pub fn add_binding(&self, name: Atom) {
-        // TODO: use the correct scope and symbol id
-        self.scopes_mut().add_binding(ScopeId::new(0), name, SymbolId::new(0));
-    }
-
-    pub fn source_type(&self) -> Ref<'_, SourceType> {
-        Ref::map(self.semantic.borrow(), |semantic| semantic.source_type())
-    }
-
-    pub fn errors(&self) -> Vec<Error> {
+    pub fn take_errors(&self) -> Vec<OxcDiagnostic> {
         mem::take(&mut self.errors.borrow_mut())
     }
 
-    /// Push a Transform Error
-    pub fn error<T: Into<Error>>(&mut self, error: T) {
-        self.errors.borrow_mut().push(error.into());
+    /// Add an Error
+    pub fn error(&self, error: OxcDiagnostic) {
+        self.errors.borrow_mut().push(error);
     }
 }

@@ -1,25 +1,31 @@
 use oxc_ast::{
-    ast::{
-        ClassElement, Declaration, ExportDefaultDeclarationKind, Expression, FunctionType,
-        ModuleDeclaration, PropertyKey, Statement, TSSignature,
-    },
     AstKind,
+    ast::{
+        ClassElement, Declaration, ExportDefaultDeclarationKind, FunctionType, ModuleDeclaration,
+        PropertyKey, Statement, TSSignature, match_expression,
+    },
 };
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::Error,
-};
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
-use oxc_span::{Atom, GetSpan, Span};
+use oxc_span::{CompactStr, GetSpan, Span};
 
-use crate::{ast_util::get_name_from_property_key, context::LintContext, rule::Rule, AstNode};
+use crate::{
+    AstNode,
+    context::{ContextHost, LintContext},
+    rule::Rule,
+};
 
-#[derive(Debug, Error, Diagnostic)]
-#[error(
-    "typescript-eslint(adjacent-overload-signatures): All {0:?} signatures should be adjacent."
-)]
-#[diagnostic(severity(warning))]
-struct AdjacentOverloadSignaturesDiagnostic(Atom, #[label] pub Option<Span>, #[label] pub Span);
+fn adjacent_overload_signatures_diagnostic(
+    fn_name: &str,
+    first: Option<Span>,
+    second: Span,
+) -> OxcDiagnostic {
+    let mut d = OxcDiagnostic::warn(format!("All {fn_name:?} signatures should be adjacent."));
+    if let Some(span) = first {
+        d = d.and_label(span);
+    }
+    d.and_label(second)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct AdjacentOverloadSignatures;
@@ -71,6 +77,7 @@ declare_oxc_lint!(
     /// export function foo(sn: string | number): void;
     /// ```
     AdjacentOverloadSignatures,
+    typescript,
     style
 );
 
@@ -83,24 +90,23 @@ enum MethodKind {
 }
 
 fn get_kind_from_key(key: &PropertyKey) -> MethodKind {
+    #[expect(clippy::match_same_arms)]
     match key {
-        PropertyKey::Identifier(_) => MethodKind::Normal,
+        PropertyKey::StaticIdentifier(_) => MethodKind::Normal,
         PropertyKey::PrivateIdentifier(_) => MethodKind::Private,
-        PropertyKey::Expression(expr) => match expr {
-            Expression::StringLiteral(_) => MethodKind::Normal,
-            Expression::NumberLiteral(_)
-            | Expression::BigintLiteral(_)
-            | Expression::TemplateLiteral(_)
-            | Expression::RegExpLiteral(_)
-            | Expression::NullLiteral(_) => MethodKind::Quoted,
-            _ => MethodKind::Expression,
-        },
+        PropertyKey::StringLiteral(_) => MethodKind::Normal,
+        PropertyKey::NumericLiteral(_)
+        | PropertyKey::BigIntLiteral(_)
+        | PropertyKey::TemplateLiteral(_)
+        | PropertyKey::RegExpLiteral(_)
+        | PropertyKey::NullLiteral(_) => MethodKind::Quoted,
+        match_expression!(PropertyKey) => MethodKind::Expression,
     }
 }
 
 #[derive(Debug)]
 struct Method {
-    name: Atom,
+    name: CompactStr,
     r#static: bool,
     call_signature: bool,
     kind: MethodKind,
@@ -109,7 +115,7 @@ struct Method {
 
 impl Method {
     fn is_same_method(&self, other: Option<&Self>) -> bool {
-        other.map_or(false, |other| {
+        other.is_some_and(|other| {
             self.name == other.name
                 && self.r#static == other.r#static
                 && self.call_signature == other.call_signature
@@ -125,15 +131,13 @@ trait GetMethod {
 impl GetMethod for ClassElement<'_> {
     fn get_method(&self) -> Option<Method> {
         match self {
-            ClassElement::MethodDefinition(def) => {
-                get_name_from_property_key(&def.key).map(|name| Method {
-                    name,
-                    r#static: def.r#static,
-                    call_signature: false,
-                    kind: get_kind_from_key(&def.key),
-                    span: Span::new(def.span.start, def.key.span().end),
-                })
-            }
+            ClassElement::MethodDefinition(def) => def.key.static_name().map(|name| Method {
+                name: name.into(),
+                r#static: def.r#static,
+                call_signature: false,
+                kind: get_kind_from_key(&def.key),
+                span: Span::new(def.span.start, def.key.span().end),
+            }),
             _ => None,
         }
     }
@@ -142,24 +146,22 @@ impl GetMethod for ClassElement<'_> {
 impl GetMethod for TSSignature<'_> {
     fn get_method(&self) -> Option<Method> {
         match self {
-            TSSignature::TSMethodSignature(sig) => {
-                get_name_from_property_key(&sig.key).map(|name| Method {
-                    name,
-                    r#static: false,
-                    call_signature: false,
-                    kind: get_kind_from_key(&sig.key),
-                    span: sig.key.span(),
-                })
-            }
+            TSSignature::TSMethodSignature(sig) => sig.key.static_name().map(|name| Method {
+                name: name.into(),
+                r#static: false,
+                call_signature: false,
+                kind: get_kind_from_key(&sig.key),
+                span: sig.key.span(),
+            }),
             TSSignature::TSCallSignatureDeclaration(sig) => Some(Method {
-                name: Atom::from("call"),
+                name: "call".into(),
                 r#static: false,
                 call_signature: true,
                 kind: MethodKind::Normal,
                 span: sig.span,
             }),
             TSSignature::TSConstructSignatureDeclaration(decl) => Some(Method {
-                name: Atom::from("new"),
+                name: "new".into(),
                 r#static: false,
                 call_signature: false,
                 kind: MethodKind::Normal,
@@ -183,7 +185,7 @@ impl GetMethod for ModuleDeclaration<'_> {
                             FunctionType::FunctionDeclaration | FunctionType::TSDeclareFunction
                         ) {
                             func_decl.id.as_ref().map(|id| Method {
-                                name: id.name.clone(),
+                                name: id.name.to_compact_str(),
                                 r#static: false,
                                 call_signature: false,
                                 kind: MethodKind::Normal,
@@ -199,7 +201,7 @@ impl GetMethod for ModuleDeclaration<'_> {
             ModuleDeclaration::ExportNamedDeclaration(named_decl) => {
                 if let Some(Declaration::FunctionDeclaration(func_decl)) = &named_decl.declaration {
                     return func_decl.id.as_ref().map(|id| Method {
-                        name: id.name.clone(),
+                        name: id.name.to_compact_str(),
                         r#static: false,
                         call_signature: false,
                         kind: MethodKind::Normal,
@@ -222,7 +224,7 @@ impl GetMethod for Declaration<'_> {
                     FunctionType::FunctionDeclaration | FunctionType::TSDeclareFunction
                 ) {
                     func_decl.id.as_ref().map(|id| Method {
-                        name: id.name.clone(),
+                        name: id.name.to_compact_str(),
                         r#static: false,
                         call_signature: false,
                         kind: MethodKind::Normal,
@@ -239,10 +241,12 @@ impl GetMethod for Declaration<'_> {
 
 impl GetMethod for Statement<'_> {
     fn get_method(&self) -> Option<Method> {
-        match self {
-            Statement::ModuleDeclaration(decl) => decl.get_method(),
-            Statement::Declaration(decl) => decl.get_method(),
-            _ => None,
+        if let Some(decl) = self.as_module_declaration() {
+            decl.get_method()
+        } else if let Some(decl) = self.as_declaration() {
+            decl.get_method()
+        } else {
+            None
         }
     }
 }
@@ -257,16 +261,16 @@ fn check_and_report(methods: &Vec<Option<Method>>, ctx: &LintContext<'_>) {
 
             if index.is_some() && !method.is_same_method(last_method) {
                 let name = if method.r#static {
-                    Atom::from(format!("static {0}", method.name))
+                    format!("static {0}", method.name)
                 } else {
-                    method.name.clone()
+                    method.name.to_string()
                 };
 
                 let last_same_method =
                     seen_methods.iter().rev().find(|m| m.is_same_method(Some(method)));
 
-                ctx.diagnostic(AdjacentOverloadSignaturesDiagnostic(
-                    name,
+                ctx.diagnostic(adjacent_overload_signatures_diagnostic(
+                    &name,
                     last_same_method.map(|m| m.span),
                     method.span,
                 ));
@@ -319,6 +323,10 @@ impl Rule for AdjacentOverloadSignatures {
             }
             _ => {}
         }
+    }
+
+    fn should_run(&self, ctx: &ContextHost) -> bool {
+        ctx.source_type().is_typescript()
     }
 }
 
@@ -758,5 +766,6 @@ fn test() {
       }",
     ];
 
-    Tester::new_without_config(AdjacentOverloadSignatures::NAME, pass, fail).test_and_snapshot();
+    Tester::new(AdjacentOverloadSignatures::NAME, AdjacentOverloadSignatures::PLUGIN, pass, fail)
+        .test_and_snapshot();
 }

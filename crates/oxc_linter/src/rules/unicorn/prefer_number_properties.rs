@@ -1,19 +1,18 @@
-use oxc_ast::{ast::Expression, AstKind};
-use oxc_diagnostics::{
-    miette::{self, Diagnostic},
-    thiserror::{self, Error},
+use oxc_ast::{
+    AstKind,
+    ast::{Expression, match_member_expression},
 };
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::{GetSpan, Span};
 
-use crate::{context::LintContext, globals::GLOBAL_OBJECT_NAMES, rule::Rule, AstNode};
+use crate::{AstNode, context::LintContext, globals::GLOBAL_OBJECT_NAMES, rule::Rule};
 
-#[derive(Debug, Error, Diagnostic)]
-#[error(
-    "eslint-plugin-unicorn(prefer-number-properties): Use `Number.{1}` instead of the global `{1}`"
-)]
-#[diagnostic(severity(warning), help("Replace it with `Number.{1}`"))]
-struct PreferNumberPropertiesDiagnostic(#[label] pub Span, pub String);
+fn prefer_number_properties_diagnostic(span: Span, method_name: &str) -> OxcDiagnostic {
+    OxcDiagnostic::warn(format!("Use `Number.{method_name}` instead of the global `{method_name}`"))
+        .with_help(format!("Replace it with `Number.{method_name}`"))
+        .with_label(span)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct PreferNumberProperties;
@@ -35,18 +34,23 @@ declare_oxc_lint!(
     /// - [`Number.POSITIVE_INFINITY`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/POSITIVE_INFINITY) over [`Infinity`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Infinity)
     /// - [`Number.NEGATIVE_INFINITY`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/NEGATIVE_INFINITY) over [`-Infinity`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Infinity)
     ///
-    /// ### Example
+    /// ### Examples
+    ///
+    /// Examples of **incorrect** code for this rule:
     /// ```javascript
-    /// // bad
     /// const foo = parseInt('10', 2);
     /// const bar = parseFloat('10.5');
+    /// ```
     ///
-    /// // good
+    /// Examples of **correct** code for this rule:
+    /// ```javascript
     /// const foo = Number.parseInt('10', 2);
     /// const bar = Number.parseFloat('10.5');
     /// ```
     PreferNumberProperties,
+    unicorn,
     restriction,
+    pending
 );
 
 impl Rule for PreferNumberProperties {
@@ -60,15 +64,15 @@ impl Rule for PreferNumberProperties {
                 if GLOBAL_OBJECT_NAMES.contains(ident_name.name.as_str()) {
                     match member_expr.static_property_name() {
                         Some("NaN") => {
-                            ctx.diagnostic(PreferNumberPropertiesDiagnostic(
+                            ctx.diagnostic(prefer_number_properties_diagnostic(
                                 member_expr.span(),
-                                "NaN".to_string(),
+                                "NaN",
                             ));
                         }
                         Some("Infinity") => {
-                            ctx.diagnostic(PreferNumberPropertiesDiagnostic(
+                            ctx.diagnostic(prefer_number_properties_diagnostic(
                                 member_expr.span(),
-                                "Infinity".to_string(),
+                                "Infinity",
                             ));
                         }
                         _ => {}
@@ -77,40 +81,22 @@ impl Rule for PreferNumberProperties {
             }
             AstKind::IdentifierReference(ident_ref) => match ident_ref.name.as_str() {
                 "NaN" | "Infinity" => {
-                    ctx.diagnostic(PreferNumberPropertiesDiagnostic(
+                    ctx.diagnostic(prefer_number_properties_diagnostic(
                         ident_ref.span,
-                        ident_ref.name.to_string(),
+                        &ident_ref.name,
                     ));
                 }
                 _ => {}
             },
-            AstKind::IdentifierName(ident_name) => {
-                if matches!(
-                    ctx.nodes().parent_kind(node.id()),
-                    Some(AstKind::MemberExpression(_) | AstKind::PropertyKey(_))
-                ) {
-                    return;
-                };
-
-                match ident_name.name.as_str() {
-                    "NaN" | "Infinity" => {
-                        ctx.diagnostic(PreferNumberPropertiesDiagnostic(
-                            ident_name.span,
-                            ident_name.name.to_string(),
-                        ));
-                    }
-                    _ => {}
-                }
-            }
             AstKind::CallExpression(call_expr) => {
                 let Some(ident_name) = extract_ident_from_expression(&call_expr.callee) else {
                     return;
                 };
 
                 if matches!(ident_name, "isNaN" | "isFinite" | "parseFloat" | "parseInt") {
-                    ctx.diagnostic(PreferNumberPropertiesDiagnostic(
+                    ctx.diagnostic(prefer_number_properties_diagnostic(
                         call_expr.callee.span(),
-                        ident_name.to_string(),
+                        ident_name,
                     ));
                 }
             }
@@ -122,7 +108,8 @@ impl Rule for PreferNumberProperties {
 fn extract_ident_from_expression<'b>(expr: &'b Expression<'_>) -> Option<&'b str> {
     match expr {
         Expression::Identifier(ident_name) => Some(ident_name.name.as_str()),
-        Expression::MemberExpression(member_expr) => {
+        match_member_expression!(Expression) => {
+            let member_expr = expr.to_member_expression();
             let Expression::Identifier(ident_name) = member_expr.object() else {
                 return None;
             };
@@ -272,5 +259,6 @@ fn test() {
         (r"-globalThis.Infinity", None),
     ];
 
-    Tester::new(PreferNumberProperties::NAME, pass, fail).test_and_snapshot();
+    Tester::new(PreferNumberProperties::NAME, PreferNumberProperties::PLUGIN, pass, fail)
+        .test_and_snapshot();
 }

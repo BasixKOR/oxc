@@ -1,397 +1,307 @@
-use oxc_allocator::Vec;
-use oxc_ast::{ast::*, AstBuilder};
-use oxc_span::{Atom, SPAN};
-use oxc_syntax::{
-    operator::{AssignmentOperator, BinaryOperator, LogicalOperator},
-    NumberBase,
-};
-use rustc_hash::FxHashSet;
-use std::{mem, rc::Rc};
+use oxc_allocator::Vec as ArenaVec;
+use oxc_ast::ast::*;
+use oxc_traverse::{Traverse, TraverseCtx};
 
-use crate::{context::TransformerCtx, utils::is_valid_identifier};
+use crate::TransformCtx;
 
-/// Transform TypeScript
+mod annotations;
+mod diagnostics;
+mod r#enum;
+mod module;
+mod namespace;
+mod options;
+mod rewrite_extensions;
+
+use annotations::TypeScriptAnnotations;
+use r#enum::TypeScriptEnum;
+use module::TypeScriptModule;
+use namespace::TypeScriptNamespace;
+pub use options::{RewriteExtensionsMode, TypeScriptOptions};
+use rewrite_extensions::TypeScriptRewriteExtensions;
+
+/// [Preset TypeScript](https://babeljs.io/docs/babel-preset-typescript)
 ///
-/// References:
-/// * <https://babeljs.io/docs/babel-plugin-transform-typescript>
-/// * <https://github.com/babel/babel/tree/main/packages/babel-plugin-transform-typescript>
-/// * <https://www.typescriptlang.org/tsconfig#verbatimModuleSyntax>
-pub struct TypeScript<'a> {
-    ast: Rc<AstBuilder<'a>>,
-    ctx: TransformerCtx<'a>,
-    verbatim_module_syntax: bool,
+/// This preset includes the following plugins:
+///
+/// * [transform-typescript](https://babeljs.io/docs/babel-plugin-transform-typescript)
+///
+/// This plugin adds support for the types syntax used by the TypeScript programming language.
+/// However, this plugin does not add the ability to type-check the JavaScript passed to it.
+/// For that, you will need to install and set up TypeScript.
+///
+/// Note that although the TypeScript compiler tsc actively supports certain JavaScript proposals such as optional chaining (?.),
+/// nullish coalescing (??) and class properties (this.#x), this preset does not include these features
+/// because they are not the types syntax available in TypeScript only.
+/// We recommend using preset-env with preset-typescript if you want to transpile these features.
+///
+/// This plugin is included in `preset-typescript`.
+///
+/// ## Example
+///
+/// In:  `const x: number = 0;`
+/// Out: `const x = 0;`
+pub struct TypeScript<'a, 'ctx> {
+    ctx: &'ctx TransformCtx<'a>,
 
-    export_name_set: FxHashSet<Atom>,
+    annotations: TypeScriptAnnotations<'a, 'ctx>,
+    r#enum: TypeScriptEnum<'a>,
+    namespace: TypeScriptNamespace<'a, 'ctx>,
+    module: TypeScriptModule<'a, 'ctx>,
+    rewrite_extensions: Option<TypeScriptRewriteExtensions>,
 }
 
-impl<'a> TypeScript<'a> {
-    pub fn new(
-        ast: Rc<AstBuilder<'a>>,
-        ctx: TransformerCtx<'a>,
-        verbatim_module_syntax: bool,
-    ) -> Self {
-        Self { ast, ctx, verbatim_module_syntax, export_name_set: FxHashSet::default() }
-    }
-
-    /// ```TypeScript
-    /// enum Foo {
-    ///   X
-    /// }
-    /// ```
-    /// ```JavaScript
-    /// var Foo = ((Foo) => {
-    ///   const X = 0; Foo[Foo["X"] = X] = "X";
-    ///   return Foo;
-    /// })(Foo || {});
-    /// ```
-    pub fn transform_declaration(&mut self, decl: &mut Declaration<'a>) {
-        let Declaration::TSEnumDeclaration(ts_enum_declaration) = decl else {
-            return;
-        };
-
-        if ts_enum_declaration.modifiers.contains(ModifierKind::Declare) {
-            return;
+impl<'a, 'ctx> TypeScript<'a, 'ctx> {
+    pub fn new(options: &TypeScriptOptions, ctx: &'ctx TransformCtx<'a>) -> Self {
+        Self {
+            ctx,
+            annotations: TypeScriptAnnotations::new(options, ctx),
+            r#enum: TypeScriptEnum::new(),
+            namespace: TypeScriptNamespace::new(options, ctx),
+            module: TypeScriptModule::new(options.only_remove_type_imports, ctx),
+            rewrite_extensions: TypeScriptRewriteExtensions::new(options),
         }
-
-        let span = ts_enum_declaration.span;
-        let ident = ts_enum_declaration.id.clone();
-        let kind = self.ast.binding_pattern_identifier(ident);
-        let id = self.ast.binding_pattern(kind, None, false);
-
-        let mut params = self.ast.new_vec();
-
-        // ((Foo) => {
-        params.push(self.ast.formal_parameter(SPAN, id, None, false, self.ast.new_vec()));
-
-        let params = self.ast.formal_parameters(
-            SPAN,
-            FormalParameterKind::ArrowFormalParameters,
-            params,
-            None,
-        );
-
-        // Foo[Foo["X"] = 0] = "X";
-        let enum_name = ts_enum_declaration.id.name.clone();
-        let statements =
-            self.transform_ts_enum_members(&mut ts_enum_declaration.body.members, &enum_name);
-        let body =
-            self.ast.function_body(ts_enum_declaration.body.span, self.ast.new_vec(), statements);
-
-        let callee = self.ast.arrow_expression(SPAN, false, false, false, params, body, None, None);
-
-        // })(Foo || {});
-        let mut arguments = self.ast.new_vec();
-        let op = LogicalOperator::Or;
-        let left = self
-            .ast
-            .identifier_reference_expression(IdentifierReference::new(SPAN, enum_name.clone()));
-        let right = self.ast.object_expression(SPAN, self.ast.new_vec(), None);
-        let expression = self.ast.logical_expression(SPAN, left, op, right);
-        arguments.push(Argument::Expression(expression));
-
-        let call_expression = self.ast.call_expression(SPAN, callee, arguments, false, None);
-
-        let kind = VariableDeclarationKind::Var;
-        let decls = {
-            let mut decls = self.ast.new_vec();
-
-            let binding_identifier = BindingIdentifier::new(SPAN, enum_name.clone());
-            let binding_pattern_kind = self.ast.binding_pattern_identifier(binding_identifier);
-            let binding = self.ast.binding_pattern(binding_pattern_kind, None, false);
-            let decl =
-                self.ast.variable_declarator(SPAN, kind, binding, Some(call_expression), false);
-
-            decls.push(decl);
-            decls
-        };
-        let variable_declaration =
-            self.ast.variable_declaration(span, kind, decls, Modifiers::empty());
-
-        *decl = Declaration::VariableDeclaration(variable_declaration);
-    }
-
-    /// Remove `export` from merged declaration.
-    /// We only preserve the first one.
-    /// for example:
-    /// ```TypeScript
-    /// export enum Foo {}
-    /// export enum Foo {}
-    /// ```
-    /// ```JavaScript
-    /// export enum Foo {}
-    /// enum Foo {}
-    /// ```
-    pub fn transform_statement(&mut self, stmt: &mut Statement<'a>) {
-        let Statement::ModuleDeclaration(module_decl) = stmt else {
-            return;
-        };
-
-        let ModuleDeclaration::ExportNamedDeclaration(export_decl) = &mut **module_decl else {
-            return;
-        };
-
-        let ExportNamedDeclaration {
-            declaration: Some(declaration),
-            source: None,
-            export_kind: ImportOrExportKind::Value,
-            ..
-        } = &mut **export_decl
-        else {
-            return;
-        };
-
-        let id = match &declaration {
-            Declaration::TSEnumDeclaration(decl) => decl.id.name.clone(),
-            Declaration::TSModuleDeclaration(decl) => {
-                let TSModuleDeclarationName::Identifier(id) = &decl.id else {
-                    return;
-                };
-
-                id.name.clone()
-            }
-            _ => return,
-        };
-
-        if self.export_name_set.insert(id) {
-            return;
-        }
-
-        *stmt = Statement::Declaration(self.ast.move_declaration(declaration));
-    }
-
-    /// * Remove the top level import / export statements that are types
-    /// * Adds `export {}` if all import / export statements are removed, this is used to tell
-    /// downstream tools that this file is in ESM.
-    pub fn transform_program(&self, program: &mut Program<'a>) {
-        let mut needs_explicit_esm = false;
-
-        for stmt in program.body.iter_mut() {
-            if let Statement::ModuleDeclaration(module_decl) = stmt {
-                needs_explicit_esm = true;
-                match &mut **module_decl {
-                    ModuleDeclaration::ExportNamedDeclaration(decl) => {
-                        decl.specifiers.retain(|specifier| specifier.export_kind.is_value());
-                    }
-                    ModuleDeclaration::ImportDeclaration(decl) if decl.import_kind.is_value() => {
-                        if let Some(specifiers) = &mut decl.specifiers {
-                            specifiers.retain(|specifier| match specifier {
-                                ImportDeclarationSpecifier::ImportSpecifier(s) => {
-                                    if s.import_kind.is_type() {
-                                        return false;
-                                    }
-
-                                    if self.verbatim_module_syntax {
-                                        return true;
-                                    }
-
-                                    self.has_value_references(&s.local.name)
-                                }
-                                ImportDeclarationSpecifier::ImportDefaultSpecifier(s)
-                                    if !self.verbatim_module_syntax =>
-                                {
-                                    self.has_value_references(&s.local.name)
-                                }
-                                ImportDeclarationSpecifier::ImportNamespaceSpecifier(s)
-                                    if !self.verbatim_module_syntax =>
-                                {
-                                    self.has_value_references(&s.local.name)
-                                }
-                                _ => true,
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        program.body.retain(|stmt| match stmt {
-            Statement::ModuleDeclaration(module_decl) => match &**module_decl {
-                ModuleDeclaration::ImportDeclaration(decl) => {
-                    if decl.import_kind.is_type() {
-                        return false;
-                    }
-
-                    if self.verbatim_module_syntax {
-                        return true;
-                    }
-
-                    !decl.specifiers.as_ref().is_some_and(|specifiers| specifiers.is_empty())
-                }
-                ModuleDeclaration::ExportNamedDeclaration(decl) => {
-                    if decl.export_kind.is_type() {
-                        return false;
-                    }
-
-                    if self.verbatim_module_syntax {
-                        return true;
-                    }
-
-                    if decl.declaration.is_none() && decl.specifiers.is_empty() {
-                        return false;
-                    }
-
-                    true
-                }
-                _ => true,
-            },
-            _ => true,
-        });
-
-        if needs_explicit_esm
-            && !program.body.iter().any(|s| matches!(s, Statement::ModuleDeclaration(_)))
-        {
-            let empty_export = self.ast.export_named_declaration(
-                SPAN,
-                None,
-                self.ast.new_vec(),
-                None,
-                ImportOrExportKind::Value,
-            );
-            let export_decl = ModuleDeclaration::ExportNamedDeclaration(empty_export);
-            program.body.push(self.ast.module_declaration(export_decl));
-        }
-    }
-
-    fn has_value_references(&self, name: &Atom) -> bool {
-        let root_scope_id = self.ctx.scopes().root_scope_id();
-
-        self.ctx
-            .scopes()
-            .get_binding(root_scope_id, name)
-            .map(|symbol_id| {
-                self.ctx
-                    .symbols()
-                    .get_resolved_references(symbol_id)
-                    .any(|x| x.is_read() || x.is_write())
-            })
-            .unwrap_or_default()
     }
 }
 
-impl<'a> TypeScript<'a> {
-    fn transform_ts_enum_members(
-        &self,
-        members: &mut Vec<'a, TSEnumMember<'a>>,
-        enum_name: &Atom,
-    ) -> Vec<'a, Statement<'a>> {
-        let mut default_init = self.ast.literal_number_expression(NumberLiteral {
-            span: SPAN,
-            value: 0.0,
-            raw: "0",
-            base: NumberBase::Decimal,
-        });
-        let mut statements = self.ast.new_vec();
-
-        for member in members.iter_mut() {
-            let (member_name, member_span) = match &member.id {
-                TSEnumMemberName::Identifier(id) => (&id.name, id.span),
-                TSEnumMemberName::StringLiteral(str) => (&str.value, str.span),
-                TSEnumMemberName::ComputedPropertyName(..)
-                | TSEnumMemberName::NumberLiteral(..) => unreachable!(),
-            };
-
-            let mut init =
-                self.ast.move_expression(member.initializer.as_mut().unwrap_or(&mut default_init));
-
-            let is_str = init.is_string_literal();
-
-            let mut self_ref = {
-                let obj = self.ast.identifier_reference_expression(IdentifierReference::new(
-                    SPAN,
-                    enum_name.clone(),
-                ));
-                let expr = self
-                    .ast
-                    .literal_string_expression(StringLiteral::new(SPAN, member_name.clone()));
-                self.ast.computed_member_expression(SPAN, obj, expr, false)
-            };
-
-            if is_valid_identifier(member_name, true) {
-                let ident = IdentifierReference::new(member_span, member_name.clone());
-
-                self_ref = self.ast.identifier_reference_expression(ident.clone());
-                let init = mem::replace(&mut init, self.ast.identifier_reference_expression(ident));
-
-                let kind = VariableDeclarationKind::Const;
-                let decls = {
-                    let mut decls = self.ast.new_vec();
-
-                    let binding_identifier = BindingIdentifier::new(SPAN, member_name.clone());
-                    let binding_pattern_kind =
-                        self.ast.binding_pattern_identifier(binding_identifier);
-                    let binding = self.ast.binding_pattern(binding_pattern_kind, None, false);
-                    let decl = self.ast.variable_declarator(SPAN, kind, binding, Some(init), false);
-
-                    decls.push(decl);
-                    decls
-                };
-                let decl = self.ast.variable_declaration(SPAN, kind, decls, Modifiers::empty());
-                let stmt: Statement<'_> =
-                    Statement::Declaration(Declaration::VariableDeclaration(decl));
-
-                statements.push(stmt);
-            }
-
-            // Foo["x"] = init
-            let member_expr = {
-                let obj = self.ast.identifier_reference_expression(IdentifierReference::new(
-                    SPAN,
-                    enum_name.clone(),
-                ));
-                let expr = self
-                    .ast
-                    .literal_string_expression(StringLiteral::new(SPAN, member_name.clone()));
-
-                self.ast.computed_member(SPAN, obj, expr, false)
-            };
-            let left = AssignmentTarget::SimpleAssignmentTarget(
-                self.ast.simple_assignment_target_member_expression(member_expr),
-            );
-            let mut expr =
-                self.ast.assignment_expression(SPAN, AssignmentOperator::Assign, left, init);
-
-            // Foo[Foo["x"] = init] = "x"
-            if !is_str {
-                let member_expr = {
-                    let obj = self.ast.identifier_reference_expression(IdentifierReference::new(
-                        SPAN,
-                        enum_name.clone(),
-                    ));
-                    self.ast.computed_member(SPAN, obj, expr, false)
-                };
-                let left = AssignmentTarget::SimpleAssignmentTarget(
-                    self.ast.simple_assignment_target_member_expression(member_expr),
-                );
-                let right = self
-                    .ast
-                    .literal_string_expression(StringLiteral::new(SPAN, member_name.clone()));
-                expr =
-                    self.ast.assignment_expression(SPAN, AssignmentOperator::Assign, left, right);
-            }
-
-            statements.push(self.ast.expression_statement(member.span, expr));
-
-            // 1 + Foo["x"]
-            default_init = {
-                let one = self.ast.literal_number_expression(NumberLiteral {
-                    span: SPAN,
-                    value: 1.0,
-                    raw: "1",
-                    base: NumberBase::Decimal,
-                });
-
-                self.ast.binary_expression(SPAN, one, BinaryOperator::Addition, self_ref)
-            };
+impl<'a> Traverse<'a> for TypeScript<'a, '_> {
+    fn enter_program(&mut self, program: &mut Program<'a>, ctx: &mut TraverseCtx<'a>) {
+        if self.ctx.source_type.is_typescript_definition() {
+            // Output empty file for TS definitions
+            program.directives.clear();
+            program.hashbang = None;
+            program.body.clear();
+        } else {
+            program.source_type = program.source_type.with_javascript(true);
+            self.namespace.enter_program(program, ctx);
         }
+    }
 
-        let enum_ref = self
-            .ast
-            .identifier_reference_expression(IdentifierReference::new(SPAN, enum_name.clone()));
-        // return Foo;
-        let return_stmt = self.ast.return_statement(SPAN, Some(enum_ref));
-        statements.push(return_stmt);
+    fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.exit_program(program, ctx);
+        self.module.exit_program(program, ctx);
+        ctx.scoping.delete_typescript_bindings();
+    }
 
-        statements
+    fn enter_arrow_function_expression(
+        &mut self,
+        expr: &mut ArrowFunctionExpression<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        self.annotations.enter_arrow_function_expression(expr, ctx);
+    }
+
+    fn enter_variable_declarator(
+        &mut self,
+        decl: &mut VariableDeclarator<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        self.annotations.enter_variable_declarator(decl, ctx);
+    }
+
+    fn enter_binding_pattern(&mut self, pat: &mut BindingPattern<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.enter_binding_pattern(pat, ctx);
+    }
+
+    fn enter_call_expression(&mut self, expr: &mut CallExpression<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.enter_call_expression(expr, ctx);
+    }
+
+    fn enter_chain_element(&mut self, element: &mut ChainElement<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.enter_chain_element(element, ctx);
+    }
+
+    fn enter_class(&mut self, class: &mut Class<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.enter_class(class, ctx);
+    }
+
+    fn enter_class_body(&mut self, body: &mut ClassBody<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.enter_class_body(body, ctx);
+    }
+
+    fn enter_ts_module_declaration(
+        &mut self,
+        decl: &mut TSModuleDeclaration<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        self.annotations.enter_ts_module_declaration(decl, ctx);
+    }
+
+    fn enter_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.enter_expression(expr, ctx);
+    }
+
+    fn enter_simple_assignment_target(
+        &mut self,
+        target: &mut SimpleAssignmentTarget<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        self.annotations.enter_simple_assignment_target(target, ctx);
+    }
+
+    fn enter_assignment_target(
+        &mut self,
+        target: &mut AssignmentTarget<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        self.annotations.enter_assignment_target(target, ctx);
+    }
+
+    fn enter_formal_parameter(
+        &mut self,
+        param: &mut FormalParameter<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        self.annotations.enter_formal_parameter(param, ctx);
+    }
+
+    fn exit_function(&mut self, func: &mut Function<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.exit_function(func, ctx);
+    }
+
+    fn enter_jsx_opening_element(
+        &mut self,
+        elem: &mut JSXOpeningElement<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        self.annotations.enter_jsx_opening_element(elem, ctx);
+    }
+
+    fn enter_method_definition(
+        &mut self,
+        def: &mut MethodDefinition<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        self.annotations.enter_method_definition(def, ctx);
+    }
+
+    fn exit_method_definition(
+        &mut self,
+        def: &mut MethodDefinition<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        self.annotations.exit_method_definition(def, ctx);
+    }
+
+    fn enter_new_expression(&mut self, expr: &mut NewExpression<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.enter_new_expression(expr, ctx);
+    }
+
+    fn enter_property_definition(
+        &mut self,
+        def: &mut PropertyDefinition<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        self.annotations.enter_property_definition(def, ctx);
+    }
+
+    fn enter_accessor_property(
+        &mut self,
+        def: &mut AccessorProperty<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        self.annotations.enter_accessor_property(def, ctx);
+    }
+
+    fn enter_statements(
+        &mut self,
+        stmts: &mut ArenaVec<'a, Statement<'a>>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        self.annotations.enter_statements(stmts, ctx);
+    }
+
+    fn exit_statements(
+        &mut self,
+        stmts: &mut ArenaVec<'a, Statement<'a>>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        self.annotations.exit_statements(stmts, ctx);
+    }
+
+    fn enter_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.r#enum.enter_statement(stmt, ctx);
+        self.module.enter_statement(stmt, ctx);
+    }
+
+    fn exit_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.exit_statement(stmt, ctx);
+    }
+
+    fn enter_if_statement(&mut self, stmt: &mut IfStatement<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.enter_if_statement(stmt, ctx);
+    }
+
+    fn enter_while_statement(&mut self, stmt: &mut WhileStatement<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.enter_while_statement(stmt, ctx);
+    }
+
+    fn enter_do_while_statement(
+        &mut self,
+        stmt: &mut DoWhileStatement<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        self.annotations.enter_do_while_statement(stmt, ctx);
+    }
+
+    fn enter_for_statement(&mut self, stmt: &mut ForStatement<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.enter_for_statement(stmt, ctx);
+    }
+
+    fn enter_for_in_statement(&mut self, stmt: &mut ForInStatement<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.enter_for_in_statement(stmt, ctx);
+    }
+
+    fn enter_for_of_statement(&mut self, stmt: &mut ForOfStatement<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.enter_for_of_statement(stmt, ctx);
+    }
+
+    fn enter_tagged_template_expression(
+        &mut self,
+        expr: &mut TaggedTemplateExpression<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        self.annotations.enter_tagged_template_expression(expr, ctx);
+    }
+
+    fn enter_jsx_element(&mut self, elem: &mut JSXElement<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.enter_jsx_element(elem, ctx);
+    }
+
+    fn enter_jsx_fragment(&mut self, elem: &mut JSXFragment<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.annotations.enter_jsx_fragment(elem, ctx);
+    }
+
+    fn enter_declaration(&mut self, node: &mut Declaration<'a>, ctx: &mut TraverseCtx<'a>) {
+        self.module.enter_declaration(node, ctx);
+    }
+
+    fn enter_import_declaration(
+        &mut self,
+        node: &mut ImportDeclaration<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        if let Some(rewrite_extensions) = &mut self.rewrite_extensions {
+            rewrite_extensions.enter_import_declaration(node, ctx);
+        }
+    }
+
+    fn enter_export_all_declaration(
+        &mut self,
+        node: &mut ExportAllDeclaration<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        if let Some(rewrite_extensions) = &mut self.rewrite_extensions {
+            rewrite_extensions.enter_export_all_declaration(node, ctx);
+        }
+    }
+
+    fn enter_export_named_declaration(
+        &mut self,
+        node: &mut ExportNamedDeclaration<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        if let Some(rewrite_extensions) = &mut self.rewrite_extensions {
+            rewrite_extensions.enter_export_named_declaration(node, ctx);
+        }
     }
 }
