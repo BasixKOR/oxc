@@ -22,7 +22,7 @@ pub struct ParserCheckpoint<'a> {
 impl<'a> ParserImpl<'a> {
     #[inline]
     pub(crate) fn start_span(&self) -> u32 {
-        self.token.start
+        self.token.start()
     }
 
     #[inline]
@@ -39,7 +39,7 @@ impl<'a> ParserImpl<'a> {
     /// Get current Kind
     #[inline]
     pub(crate) fn cur_kind(&self) -> Kind {
-        self.token.kind
+        self.token.kind()
     }
 
     /// Get current source text
@@ -58,7 +58,7 @@ impl<'a> ParserImpl<'a> {
 
     /// Get current template string
     pub(crate) fn cur_template_string(&self) -> Option<&'a str> {
-        self.lexer.get_template_string(self.token.start)
+        self.lexer.get_template_string(self.token.start())
     }
 
     /// Peek next token, returns EOF for final peek
@@ -70,13 +70,13 @@ impl<'a> ParserImpl<'a> {
     /// Peek next kind, returns EOF for final peek
     #[inline]
     pub(crate) fn peek_kind(&mut self) -> Kind {
-        self.peek_token().kind
+        self.peek_token().kind()
     }
 
     /// Peek at kind
     #[inline]
     pub(crate) fn peek_at(&mut self, kind: Kind) -> bool {
-        self.peek_token().kind == kind
+        self.peek_token().kind() == kind
     }
 
     /// Peek nth token
@@ -91,13 +91,13 @@ impl<'a> ParserImpl<'a> {
     /// Peek at nth kind
     #[inline]
     pub(crate) fn nth_at(&mut self, n: u8, kind: Kind) -> bool {
-        self.nth(n).kind == kind
+        self.nth(n).kind() == kind
     }
 
     /// Peek nth kind
     #[inline]
     pub(crate) fn nth_kind(&mut self, n: u8) -> Kind {
-        self.nth(n).kind
+        self.nth(n).kind()
     }
 
     /// Checks if the current index has token `Kind`
@@ -119,9 +119,10 @@ impl<'a> ParserImpl<'a> {
 
     /// Move to the next token
     /// Checks if the current token is escaped if it is a keyword
+    #[inline]
     fn advance(&mut self, kind: Kind) {
         self.test_escaped_keyword(kind);
-        self.prev_token_end = self.token.end;
+        self.prev_token_end = self.token.end();
         self.token = self.lexer.next_token();
     }
 
@@ -129,7 +130,7 @@ impl<'a> ParserImpl<'a> {
     /// Checks if the current token is escaped if it is a keyword
     fn advance_for_jsx_child(&mut self, kind: Kind) {
         self.test_escaped_keyword(kind);
-        self.prev_token_end = self.token.end;
+        self.prev_token_end = self.token.end();
         self.token = self.lexer.next_jsx_child();
     }
 
@@ -166,23 +167,20 @@ impl<'a> ParserImpl<'a> {
     /// [Automatic Semicolon Insertion](https://tc39.es/ecma262/#sec-automatic-semicolon-insertion)
     /// # Errors
     pub(crate) fn asi(&mut self) {
-        if !self.can_insert_semicolon() {
+        if self.eat(Kind::Semicolon) || self.can_insert_semicolon() {
+            /* no op */
+        } else {
             let span = Span::new(self.prev_token_end, self.prev_token_end);
             let error = diagnostics::auto_semicolon_insertion(span);
             self.set_fatal_error(error);
-            return;
-        }
-        if self.at(Kind::Semicolon) {
-            self.advance(Kind::Semicolon);
         }
     }
 
+    #[inline]
     pub(crate) fn can_insert_semicolon(&self) -> bool {
-        let kind = self.cur_kind();
-        if kind == Kind::Semicolon {
-            return true;
-        }
-        kind == Kind::RCurly || kind.is_eof() || self.cur_token().is_on_new_line
+        let token = self.cur_token();
+        let kind = token.kind();
+        kind == Kind::Semicolon || kind == Kind::RCurly || kind.is_eof() || token.is_on_new_line()
     }
 
     /// # Errors
@@ -239,30 +237,39 @@ impl<'a> ParserImpl<'a> {
     }
 
     pub(crate) fn re_lex_right_angle(&mut self) -> Kind {
+        if self.fatal_error.is_some() {
+            return Kind::Eof;
+        }
         let kind = self.cur_kind();
         if kind == Kind::RAngle {
             self.token = self.lexer.next_right_angle();
-            self.token.kind
+            self.token.kind()
         } else {
             kind
         }
     }
 
     pub(crate) fn re_lex_l_angle(&mut self) -> Kind {
+        if self.fatal_error.is_some() {
+            return Kind::Eof;
+        }
         let kind = self.cur_kind();
         if matches!(kind, Kind::ShiftLeft | Kind::ShiftLeftEq | Kind::LtEq) {
             self.token = self.lexer.re_lex_as_typescript_l_angle(kind);
-            self.token.kind
+            self.token.kind()
         } else {
             kind
         }
     }
 
     pub(crate) fn re_lex_ts_r_angle(&mut self) -> Kind {
+        if self.fatal_error.is_some() {
+            return Kind::Eof;
+        }
         let kind = self.cur_kind();
         if matches!(kind, Kind::ShiftRight | Kind::ShiftRight3) {
             self.token = self.lexer.re_lex_as_typescript_r_angle(kind);
-            self.token.kind
+            self.token.kind()
         } else {
             kind
         }
@@ -366,8 +373,7 @@ impl<'a> ParserImpl<'a> {
         let mut list = self.ast.vec();
         let mut first = true;
         loop {
-            let kind = self.cur_kind();
-            if kind == close || self.has_fatal_error() {
+            if self.cur_kind() == close || self.has_fatal_error() {
                 break;
             }
             if first {

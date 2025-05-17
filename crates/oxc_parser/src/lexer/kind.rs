@@ -6,11 +6,12 @@ use std::fmt::{self, Display};
 ///
 /// Exported for other oxc crates to use. You generally don't need to use this directly.
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
+#[repr(u8)]
 #[non_exhaustive]
 pub enum Kind {
-    Undetermined,
     #[default]
-    Eof,
+    Eof = 0,
+    Undetermined,
     Skip, // Whitespace, line breaks, comments
     // 12.5 Hashbang Comments
     HashbangComment,

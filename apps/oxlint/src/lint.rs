@@ -248,20 +248,7 @@ impl Runner for LintRunner {
         let mut options =
             LintServiceOptions::new(self.cwd, paths).with_cross_module(use_cross_module);
 
-        let lint_config = match config_builder.build() {
-            Ok(config) => config,
-            Err(diagnostic) => {
-                print_and_flush_stdout(
-                    stdout,
-                    &format!(
-                        "Failed to parse configuration file.\n{}\n",
-                        render_report(&handler, &diagnostic)
-                    ),
-                );
-
-                return CliRunResult::InvalidOptionConfig;
-            }
-        };
+        let lint_config = config_builder.build();
 
         let report_unused_directives = match inline_config_options.report_unused_directives {
             ReportUnusedDirectives::WithoutSeverity(true) => Some(AllowWarnDeny::Warn),
@@ -293,18 +280,16 @@ impl Runner for LintRunner {
             }
         }
 
-        let mut lint_service = LintService::new(linter, options);
         let mut diagnostic_service =
             Self::get_diagnostic_service(&output_formatter, &warning_options, &misc_options);
+        let tx_error = diagnostic_service.sender().clone();
 
-        let number_of_rules = lint_service.linter().number_of_rules();
+        let number_of_rules = linter.number_of_rules();
 
         // Spawn linting in another thread so diagnostics can be printed immediately from diagnostic_service.run.
-        rayon::spawn({
-            let tx_error = diagnostic_service.sender().clone();
-            move || {
-                lint_service.run(&tx_error);
-            }
+        rayon::spawn(move || {
+            let mut lint_service = LintService::new(&linter, options);
+            lint_service.run(&tx_error);
         });
 
         let diagnostic_result = diagnostic_service.run(stdout);
@@ -441,20 +426,8 @@ impl LintRunner {
             }
             .with_filters(filters);
 
-            match builder.build() {
-                Ok(config) => nested_configs.insert(dir.to_path_buf(), config),
-                Err(diagnostic) => {
-                    print_and_flush_stdout(
-                        stdout,
-                        &format!(
-                            "Failed to parse configuration file.\n{}\n",
-                            render_report(handler, &diagnostic)
-                        ),
-                    );
-
-                    return Err(CliRunResult::InvalidOptionConfig);
-                }
-            };
+            let config = builder.build();
+            nested_configs.insert(dir.to_path_buf(), config);
         }
 
         Ok(nested_configs)
@@ -777,6 +750,12 @@ mod test {
             "--disable-typescript-plugin",
             "fixtures/typescript_eslint/test.ts",
         ];
+        Tester::new().test_and_snapshot(args);
+    }
+
+    #[test]
+    fn js_and_jsx() {
+        let args = &["fixtures/linter/js_as_jsx.js"];
         Tester::new().test_and_snapshot(args);
     }
 
@@ -1154,5 +1133,17 @@ mod test {
         // https://github.com/oxc-project/oxc/pull/10597
         let args = &["--import-plugin", "-D", "import/no-cycle"];
         Tester::new().with_cwd("fixtures/import-cycle".into()).test_and_snapshot(args);
+    }
+
+    #[test]
+    fn test_rule_config_being_enabled_correctly() {
+        let args = &["-c", ".oxlintrc.json"];
+        Tester::new().with_cwd("fixtures/issue_11054".into()).test_and_snapshot(args);
+    }
+
+    #[test]
+    fn test_plugins_in_overrides_enabled_correctly() {
+        let args = &["-c", ".oxlintrc.json"];
+        Tester::new().with_cwd("fixtures/overrides_with_plugin".into()).test_and_snapshot(args);
     }
 }

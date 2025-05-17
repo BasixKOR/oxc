@@ -4,6 +4,44 @@ All notable changes to this package will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project does not adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) until v1.0.0.
 
+## [0.70.0] - 2025-05-15
+
+- 4e5c73b span: [**BREAKING**] `SourceType::from_path(".js")` return js instead of jsx (#11038) (Boshen)
+
+### Bug Fixes
+
+- 6c20277 transformer: Always update jsx options from comments (#10966) (magic-akari)
+- 27a21a7 transformer/jsx: Fix parsing JSX pragma comments (#10983) (overlookmotel)
+- a39eb85 transformer/legacy-decorator: Abstract class doesn't work in metadata (#10952) (Dunqing)
+
+### Performance
+
+- 1aed99b transformer/jsx: Use `memchr` for parsing JSX pragma comments (#11001) (overlookmotel)
+
+### Testing
+
+- 6540f44 transformer/jsx: Fix tests for JSX pragma parsing (#11000) (overlookmotel)
+
+## [0.69.0] - 2025-05-09
+
+- 8a3bba8 ast: [**BREAKING**] Fix field order for `PropertyDefinition` (#10902) (overlookmotel)
+
+- 5746d36 ast: [**BREAKING**] Fix field order for `NewExpression` (#10893) (overlookmotel)
+
+- ad4fbf4 ast: [**BREAKING**] Simplify `RegExpPattern` (#10834) (overlookmotel)
+
+### Features
+
+- 6de0bc2 transformer/typescript: Support transforming class fields into this assignment (#10854) (Dunqing)
+
+### Bug Fixes
+
+- a033c1e transformer/typescript: Panic when using `removeClassFieldsWithoutInitializer` and private class members (#10838) (camc314)
+
+### Refactor
+
+- faf0a95 syntax: Rename `NameSpaceModule` to `NamespaceModule` (#10917) (Dunqing)
+
 ## [0.68.0] - 2025-05-03
 
 - a0a37e0 ast: [**BREAKING**] `AstBuilder` methods require an `Atom` with correct lifetime (#10735) (overlookmotel)

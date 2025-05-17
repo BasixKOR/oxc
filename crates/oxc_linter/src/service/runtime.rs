@@ -38,11 +38,11 @@ use crate::fixer::{FixWithPosition, MessageWithPosition};
 #[cfg(feature = "language_server")]
 use crate::service::offset_to_position::{SpanPositionMessage, offset_to_position};
 
-pub struct Runtime {
+pub struct Runtime<'l> {
     cwd: Box<Path>,
     /// All paths to lint
     paths: IndexSet<Arc<OsStr>, FxBuildHasher>,
-    pub(super) linter: Linter,
+    pub(super) linter: &'l Linter,
     resolver: Option<Resolver>,
 
     pub(super) file_system: Box<dyn RuntimeFileSystem + Sync + Send>,
@@ -163,8 +163,8 @@ impl RuntimeFileSystem for OsFileSystem {
     }
 }
 
-impl Runtime {
-    pub(super) fn new(linter: Linter, options: LintServiceOptions) -> Self {
+impl<'l> Runtime<'l> {
+    pub(super) fn new(linter: &'l Linter, options: LintServiceOptions) -> Self {
         let resolver = options.cross_module.then(|| {
             Self::get_resolver(options.tsconfig.or_else(|| Some(options.cwd.join("tsconfig.json"))))
         });
@@ -221,11 +221,17 @@ impl Runtime {
         if not_supported_yet {
             return None;
         }
-        let source_type = source_type.unwrap_or_default();
+
+        let mut source_type = source_type.unwrap_or_default();
+        // Treat JS and JSX files to maximize chance of parsing files.
+        if source_type.is_javascript() {
+            source_type = source_type.with_jsx(true);
+        }
 
         let file_result = self.file_system.read_to_string(path).map_err(|e| {
             Error::new(OxcDiagnostic::error(format!(
-                "Failed to open file {path:?} with error \"{e}\""
+                "Failed to open file {} with error \"{e}\"",
+                path.display()
             )))
         });
         Some(match file_result {

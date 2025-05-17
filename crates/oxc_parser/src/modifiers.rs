@@ -102,17 +102,19 @@ pub struct Modifier {
     pub span: Span,
     pub kind: ModifierKind,
 }
+
 impl Modifier {
     #[inline]
     pub fn is_static(&self) -> bool {
         matches!(self.kind, ModifierKind::Static)
     }
 }
+
 impl TryFrom<Token> for Modifier {
     type Error = <ModifierKind as TryFrom<Kind>>::Error;
 
     fn try_from(tok: Token) -> Result<Self, Self::Error> {
-        ModifierKind::try_from(tok.kind).map(|kind| Self { span: tok.span(), kind })
+        ModifierKind::try_from(tok.kind()).map(|kind| Self { span: tok.span(), kind })
     }
 }
 
@@ -337,7 +339,7 @@ impl<'a> ParserImpl<'a> {
             // Rest modifiers cannot cross line
             _ => {
                 self.bump_any();
-                self.can_follow_modifier() && !self.cur_token().is_on_new_line
+                self.can_follow_modifier() && !self.cur_token().is_on_new_line()
             }
         }
     }
@@ -450,7 +452,7 @@ impl<'a> ParserImpl<'a> {
             && self.try_parse(Self::next_token_can_follow_modifier).is_some()
     }
 
-    fn next_token_can_follow_modifier(&mut self) {
+    pub(crate) fn next_token_can_follow_modifier(&mut self) {
         let b = match self.cur_kind() {
             Kind::Const => self.peek_at(Kind::Enum),
             Kind::Export => {
@@ -462,9 +464,13 @@ impl<'a> ParserImpl<'a> {
                 }
             }
             Kind::Default => self.next_token_can_follow_default_keyword(),
-            Kind::Static | Kind::Get | Kind::Set => {
+            Kind::Static => {
                 self.bump_any();
                 self.can_follow_modifier()
+            }
+            Kind::Get | Kind::Set => {
+                self.bump_any();
+                self.can_follow_get_or_set_keyword()
             }
             _ => self.next_token_is_on_same_line_and_can_follow_modifier(),
         };
@@ -481,7 +487,7 @@ impl<'a> ParserImpl<'a> {
 
     fn next_token_is_on_same_line_and_can_follow_modifier(&mut self) -> bool {
         self.bump_any();
-        if self.cur_token().is_on_new_line {
+        if self.cur_token().is_on_new_line() {
             return false;
         }
         self.can_follow_modifier()
@@ -522,14 +528,19 @@ impl<'a> ParserImpl<'a> {
         }
     }
 
+    fn can_follow_get_or_set_keyword(&self) -> bool {
+        let kind = self.cur_kind();
+        kind == Kind::LBrack || kind == Kind::PrivateIdentifier || kind.is_literal_property_name()
+    }
+
     fn next_token_is_class_keyword_on_same_line(&mut self) -> bool {
         self.bump_any();
-        self.cur_kind() == Kind::Class && !self.cur_token().is_on_new_line
+        self.cur_kind() == Kind::Class && !self.cur_token().is_on_new_line()
     }
 
     fn next_token_is_function_keyword_on_same_line(&mut self) -> bool {
         self.bump_any();
-        self.cur_kind() == Kind::Function && !self.cur_token().is_on_new_line
+        self.cur_kind() == Kind::Function && !self.cur_token().is_on_new_line()
     }
 
     fn check_for_duplicate_modifiers(&mut self, seen_flags: ModifierFlags, modifier: &Modifier) {

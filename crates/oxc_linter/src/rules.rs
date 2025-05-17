@@ -7,31 +7,31 @@
 
 /// <https://github.com/import-js/eslint-plugin-import>
 mod import {
-    pub mod exports_last;
-    pub mod group_exports;
-    pub mod no_absolute_path;
-    pub mod no_anonymous_default_export;
-    pub mod no_empty_named_blocks;
-    pub mod no_mutable_exports;
-    // pub mod no_deprecated;
-    // pub mod no_unused_modules;
+    pub mod consistent_type_specifier_style;
     pub mod default;
     pub mod export;
+    pub mod exports_last;
     pub mod first;
+    pub mod group_exports;
     pub mod max_dependencies;
     pub mod named;
     pub mod namespace;
+    pub mod no_absolute_path;
     pub mod no_amd;
+    pub mod no_anonymous_default_export;
     pub mod no_commonjs;
     pub mod no_cycle;
     pub mod no_default_export;
     pub mod no_duplicates;
     pub mod no_dynamic_require;
+    pub mod no_empty_named_blocks;
+    pub mod no_mutable_exports;
     pub mod no_named_as_default;
     pub mod no_named_as_default_member;
     pub mod no_named_default;
     pub mod no_namespace;
     pub mod no_self_import;
+    pub mod no_unassigned_import;
     pub mod no_webpack_loader_syntax;
     pub mod unambiguous;
 }
@@ -284,6 +284,7 @@ mod react {
     pub mod button_has_type;
     pub mod checked_requires_onchange_or_readonly;
     pub mod exhaustive_deps;
+    pub mod forbid_elements;
     pub mod forward_ref_uses_ref;
     pub mod iframe_missing_sandbox;
     pub mod jsx_boolean_value;
@@ -562,8 +563,6 @@ mod node {
 }
 
 oxc_macros::declare_all_lint_rules! {
-    // import::no_deprecated,
-    // import::no_unused_modules,
     eslint::array_callback_return,
     eslint::block_scoped_var,
     eslint::curly,
@@ -707,11 +706,13 @@ oxc_macros::declare_all_lint_rules! {
     eslint::valid_typeof,
     eslint::vars_on_top,
     eslint::yoda,
+    import::consistent_type_specifier_style,
     import::default,
     import::export,
     import::exports_last,
     import::first,
     import::group_exports,
+    import::no_unassigned_import,
     import::no_empty_named_blocks,
     import::no_anonymous_default_export,
     import::no_absolute_path,
@@ -891,6 +892,7 @@ oxc_macros::declare_all_lint_rules! {
     react::button_has_type,
     react::checked_requires_onchange_or_readonly,
     react::exhaustive_deps,
+    react::forbid_elements,
     react::forward_ref_uses_ref,
     react::iframe_missing_sandbox,
     react::jsx_filename_extension,

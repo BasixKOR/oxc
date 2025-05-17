@@ -14,15 +14,16 @@ use oxc_traverse::{
 use crate::{
     TransformCtx,
     common::helper_loader::Helper,
-    utils::ast_builder::{create_bind_call, create_call_call, create_member_callee},
+    utils::ast_builder::{
+        create_assignment, create_bind_call, create_call_call, create_member_callee,
+    },
 };
 
 use super::{
     ClassProperties, ResolvedPrivateProp,
     class_details::ResolvedGetSetPrivateProp,
     utils::{
-        create_assignment, create_underscore_ident_name,
-        debug_assert_expr_is_not_parenthesis_or_typescript_syntax,
+        create_underscore_ident_name, debug_assert_expr_is_not_parenthesis_or_typescript_syntax,
     },
 };
 
@@ -358,7 +359,8 @@ impl<'a> ClassProperties<'a, '_> {
         let prop_ident = prop_binding.create_read_expression(ctx);
 
         // Get replacement for callee
-        let replacement = if is_static {
+
+        if is_static {
             // `object.#prop(arg)` -> `_assertClassBrand(Class, object, _prop)._.call(object, arg)`
             // or shortcut `_prop._.call(object, arg)`
 
@@ -443,9 +445,7 @@ impl<'a> ClassProperties<'a, '_> {
 
             // `_classPrivateFieldGet2(_prop, object)`
             (self.create_private_field_get(prop_ident, object1, span, ctx), object2)
-        };
-
-        replacement
+        }
     }
 
     /// Transform assignment to private field.
