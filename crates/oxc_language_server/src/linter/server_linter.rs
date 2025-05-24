@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use globset::Glob;
@@ -21,15 +21,16 @@ use super::config_walker::ConfigWalker;
 pub struct ServerLinter {
     isolated_linter: Arc<IsolatedLintHandler>,
     gitignore_glob: Vec<Gitignore>,
+    pub extended_paths: Vec<PathBuf>,
 }
 
 impl ServerLinter {
     pub fn new(root_uri: &Uri, options: &Options) -> Self {
-        let nested_configs = Self::create_nested_configs(root_uri, options);
+        let (nested_configs, mut extended_paths) = Self::create_nested_configs(root_uri, options);
         let root_path = root_uri.to_file_path().unwrap();
         let relative_config_path = options.config_path.clone();
-        let oxlintrc = if relative_config_path.is_some() {
-            let config = root_path.join(relative_config_path.unwrap());
+        let oxlintrc = if let Some(relative_config_path) = relative_config_path {
+            let config = normalize_path(root_path.join(relative_config_path));
             if config.try_exists().is_ok_and(|exists| exists) {
                 if let Ok(oxlintrc) = Oxlintrc::from_file(&config) {
                     oxlintrc
@@ -61,7 +62,8 @@ impl ServerLinter {
             config_builder.plugins().has_import()
         };
 
-        let base_config = config_builder.build().expect("Failed to build config store");
+        extended_paths.extend(config_builder.extended_paths.clone());
+        let base_config = config_builder.build();
 
         let lint_options = LintOptions { fix: options.fix_kind(), ..Default::default() };
 
@@ -88,6 +90,7 @@ impl ServerLinter {
         Self {
             isolated_linter: Arc::new(isolated_linter),
             gitignore_glob: Self::create_ignore_glob(root_uri, &oxlintrc),
+            extended_paths,
         }
     }
 
@@ -96,10 +99,11 @@ impl ServerLinter {
     fn create_nested_configs(
         root_uri: &Uri,
         options: &Options,
-    ) -> ConcurrentHashMap<PathBuf, Config> {
+    ) -> (ConcurrentHashMap<PathBuf, Config>, Vec<PathBuf>) {
+        let mut extended_paths = Vec::new();
         // nested config is disabled, no need to search for configs
         if !options.use_nested_configs() {
-            return ConcurrentHashMap::default();
+            return (ConcurrentHashMap::default(), extended_paths);
         }
 
         let root_path = root_uri.to_file_path().expect("Failed to convert URI to file path");
@@ -123,15 +127,11 @@ impl ServerLinter {
                 warn!("Skipping config (builder failed): {}", file_path.display());
                 continue;
             };
-            let Ok(config_store) = config_store_builder.build() else {
-                warn!("Skipping config (builder failed): {}", file_path.display());
-                continue;
-            };
-
-            nested_configs.pin().insert(dir_path.to_path_buf(), config_store);
+            extended_paths.extend(config_store_builder.extended_paths.clone());
+            nested_configs.pin().insert(dir_path.to_path_buf(), config_store_builder.build());
         }
 
-        nested_configs
+        (nested_configs, extended_paths)
     }
 
     fn create_ignore_glob(root_uri: &Uri, oxlintrc: &Oxlintrc) -> Vec<Gitignore> {
@@ -206,25 +206,61 @@ impl ServerLinter {
     }
 }
 
+/// Normalize a path by removing `.` and resolving `..` components,
+/// without touching the filesystem.
+pub fn normalize_path<P: AsRef<Path>>(path: P) -> PathBuf {
+    let mut result = PathBuf::new();
+
+    for component in path.as_ref().components() {
+        match component {
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::CurDir => {
+                // Skip current directory component
+            }
+            Component::Normal(c) => {
+                result.push(c);
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                result.push(component.as_os_str());
+            }
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod test {
-    use std::{path::PathBuf, str::FromStr};
+    use std::{
+        path::{Path, PathBuf},
+        str::FromStr,
+    };
 
     use rustc_hash::FxHashMap;
     use tower_lsp_server::lsp_types::Uri;
 
     use crate::{
         Options,
-        linter::server_linter::ServerLinter,
+        linter::server_linter::{ServerLinter, normalize_path},
         tester::{Tester, get_file_uri},
     };
+
+    #[test]
+    fn test_normalize_path() {
+        assert_eq!(
+            normalize_path(Path::new("/root/directory/./.oxlintrc.json")),
+            Path::new("/root/directory/.oxlintrc.json")
+        );
+    }
 
     #[test]
     fn test_create_nested_configs_with_disabled_nested_configs() {
         let mut flags = FxHashMap::default();
         flags.insert("disable_nested_configs".to_string(), "true".to_string());
 
-        let configs = ServerLinter::create_nested_configs(
+        let (configs, _) = ServerLinter::create_nested_configs(
             &Uri::from_str("file:///root/").unwrap(),
             &Options { flags, ..Options::default() },
         );
@@ -234,7 +270,7 @@ mod test {
 
     #[test]
     fn test_create_nested_configs() {
-        let configs = ServerLinter::create_nested_configs(
+        let (configs, _) = ServerLinter::create_nested_configs(
             &get_file_uri("fixtures/linter/init_nested_configs"),
             &Options::default(),
         );

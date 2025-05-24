@@ -95,9 +95,9 @@ impl<'a> ParserImpl<'a> {
             let mut definite = false;
             if binding_kind.is_binding_identifier()
                 && self.at(Kind::Bang)
-                && !self.cur_token().is_on_new_line
+                && !self.cur_token().is_on_new_line()
             {
-                self.eat(Kind::Bang);
+                self.bump(Kind::Bang);
                 definite = true;
             }
             let optional = self.eat(Kind::Question); // not allowed, but checked in checker/typescript.rs

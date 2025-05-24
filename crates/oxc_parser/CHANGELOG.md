@@ -4,6 +4,121 @@ All notable changes to this package will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project does not adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) until v1.0.0.
 
+## [0.72.0] - 2025-05-24
+
+### Features
+
+- 03390ad allocator: `TakeIn` trait with `AllocatorAccessor` (#11201) (Boshen)
+- 2398906 parser: Check mixed coalesce and new exponential with `preserveParens:false` (#11264) (Boshen)
+
+### Bug Fixes
+
+- aa510cf parser: Produce syntax error for `({}) = x` when `preserveParens:false` (#11263) (Boshen)
+- dcdcf12 parser: Parse `new (import("x"))` with `preserveParens: false` (#11251) (Boshen)
+- 8e8dea5 parser: Fix incorrect token start in `re_lex_right_angle` (#11204) (Boshen)
+
+### Performance
+
+- 254048d lexer: Remove string allocation (#11255) (overlookmotel)
+- 14fcf89 parser: Remove redundant checks (#11207) (Ulrich Stark)
+
+### Refactor
+
+- 02d3bb7 parser: Use `StringBuilder` instead of `String` (#11259) (overlookmotel)
+- b99749c parser: Remove lexer lookahead in parsing TS statements (#11253) (camchenry)
+- 4e12796 parser: Remove Lexer peeking for js/class (#11243) (leaysgur)
+- 6ddf7a8 parser: Remove token lookahead in type parsing (#11241) (camchenry)
+- 86e753d parser: Remove Lexer peeking for jsx (#11232) (leaysgur)
+- 07e6ae0 parser: Remove Lexer peeking for modifiers (#11228) (leaysgur)
+- 62f7184 parser: Replace peek in `parse_rest_binding` with checkpoint (#11225) (camchenry)
+- def05bc parser: Remove lookahead usage in parsing arrow function expressions (#11220) (camchenry)
+- a9dbf0a parser: Use checkpoints instead of `peek_at` in `is_un_parenthesized_async_arrow_function_worker` (#11218) (camchenry)
+- a4e2eb1 parser: Make lexer code slightly more readable (#11212) (Ulrich Stark)
+
+## [0.71.0] - 2025-05-20
+
+- 1a4fec0 codegen: [**BREAKING**] A legal comment can also be a jsdoc comment (#11158) (Boshen)
+
+### Bug Fixes
+
+- 83e4f9b parser: Fix reading `Token` flags on big-endian systems (#11153) (overlookmotel)
+- ef72143 parser: Parse index signature with multiple parameter (#11068) (Boshen)
+
+### Performance
+
+- 6571b9b ast: Use bitflags for storing comment newline state (#11096) (camchenry)
+- b9e51e2 ast: Reduce size of `Comment` to 16 bytes (#11062) (camchenry)
+- 0f9b43e lexer: Tighten search loops (#11118) (overlookmotel)
+- 261e78b lexer: Use `offset_from` and `offset_from_unsigned` for pointer comparisons (#11116) (overlookmotel)
+
+### Refactor
+
+- 58c7de6 ast: Rename `CommentNewlines` fields (#11151) (overlookmotel)
+- 7b9ab22 parser: Use bump instead of eat if ignoring return value (#11137) (Ulrich Stark)
+- bb8bde3 various: Update macros to use `expr` fragment specifier (#11113) (overlookmotel)
+
+## [0.70.0] - 2025-05-15
+
+### Bug Fixes
+
+- 635aa96 napi: Computed final source type from `lang` then `sourceType` (#11060) (Boshen)
+- 4c9a9b3 parser: Guard against re-lex tokens when fatal error (#11023) (Boshen)
+- 2b02d84 parser: Allow `for(using using` stmts (#10985) (camc314)
+
+### Performance
+
+- 80c2a5b parser: Use 8 bits for each `Token` flag (#11046) (overlookmotel)
+- a711ff4 parser: Make `Kind::Eof` (default) 0 (#11014) (overlookmotel)
+- cfd1ed3 parser: Explore packed tokens (#10933) (Tom Gasson)
+
+### Refactor
+
+- 47c624b lexer: Re-order `Token` methods (#11040) (overlookmotel)
+- c0b68eb lexer: Harden safety of transmute (#11013) (overlookmotel)
+- 54bfb4b lexer: Tidy tests for `Token` (#11011) (overlookmotel)
+- de3035a parser: `Token::set_has_separator` take `bool` (#11041) (overlookmotel)
+- 919cc59 parser: Make `ParserImpl::asi` implementation more compact (#11037) (Boshen)
+- 751876b parser: Rewrite parse class element (#11035) (Boshen)
+- b526da9 parser: Make `Token` fields private (#10936) (Boshen)
+- c993edd parser/lexer: Shorten code (#10999) (overlookmotel)
+
+### Styling
+
+- c049765 lexer: Reformat comments (#11012) (overlookmotel)
+
+## [0.69.0] - 2025-05-09
+
+- 2b5d826 ast: [**BREAKING**] Fix field order for `TSTypeAssertion` (#10906) (overlookmotel)
+
+- 1f35910 ast: [**BREAKING**] Fix field order for `TSNamedTupleMember` (#10905) (overlookmotel)
+
+- 8a3bba8 ast: [**BREAKING**] Fix field order for `PropertyDefinition` (#10902) (overlookmotel)
+
+- 5746d36 ast: [**BREAKING**] Fix field order for `NewExpression` (#10893) (overlookmotel)
+
+- 0139793 ast: [**BREAKING**] Re-order fields of `TaggedTemplateExpression` (#10889) (overlookmotel)
+
+- 6646b6b ast: [**BREAKING**] Fix field order for `JSXOpeningElement` (#10882) (overlookmotel)
+
+- cc2ed21 ast: [**BREAKING**] Fix field order for `JSXElement` and `JSXFragment` (#10881) (overlookmotel)
+
+- ad4fbf4 ast: [**BREAKING**] Simplify `RegExpPattern` (#10834) (overlookmotel)
+
+### Features
+
+- 3cf867c napi/parser: Expose module record data for `export default interface` (#10894) (Boshen)
+- 539eb9d parser: `accessor` modifier cannot be used with `readonly` and `declare` modifier. (#10870) (Boshen)
+
+### Bug Fixes
+
+- 2c09243 ast: Fix field order for `AccessorProperty` (#10878) (overlookmotel)
+- 2c05fa1 parser: Fix rhs precedence while parsing `PrivateInExpression` (#10866) (Boshen)
+- 087af52 parser: Set the correct context for class property definition (#10859) (Boshen)
+
+### Refactor
+
+- d5cd29d parser: Refactor parse member expression (#10880) (Boshen)
+
 ## [0.68.0] - 2025-05-03
 
 - 28ceb90 ast: [**BREAKING**] Remove `TSMappedTypeModifierOperator::None` variant (#10749) (overlookmotel)

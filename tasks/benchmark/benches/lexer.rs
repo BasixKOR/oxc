@@ -20,7 +20,7 @@ fn bench_lexer(criterion: &mut Criterion) {
     // It's unfortunate that this benchmark doesn't exercise the code paths for these syntaxes,
     // but this is the closest we can get to a realistic benchmark of lexer in isolation.
     let mut allocator = Allocator::default();
-    let files = TestFiles::complicated()
+    let files = TestFiles::minimal()
         .files()
         .iter()
         .map(|file| {
@@ -32,14 +32,19 @@ fn bench_lexer(criterion: &mut Criterion) {
 
             allocator.reset();
 
-            TestFile { url: file.url.clone(), file_name: file.file_name.clone(), source_text }
+            TestFile {
+                url: file.url.clone(),
+                file_name: file.file_name.clone(),
+                source_text,
+                source_type,
+            }
         })
         .collect::<Vec<_>>();
 
     for file in files {
         let id = BenchmarkId::from_parameter(&file.file_name);
         let source_text = file.source_text.as_str();
-        let source_type = SourceType::from_path(&file.file_name).unwrap();
+        let source_type = file.source_type;
         group.bench_function(id, |b| {
             // Do not include initializing allocator in benchmark.
             // User code would likely reuse the same allocator over and over to parse multiple files,
@@ -47,7 +52,7 @@ fn bench_lexer(criterion: &mut Criterion) {
             let mut allocator = Allocator::default();
             b.iter(|| {
                 let mut lexer = Lexer::new_for_benchmarks(&allocator, source_text, source_type);
-                while lexer.next_token().kind != Kind::Eof {}
+                while lexer.next_token().kind() != Kind::Eof {}
                 allocator.reset();
             });
         });
@@ -108,7 +113,7 @@ impl SourceCleaner {
 
         // Check lexer can lex it without any errors
         let mut lexer = Lexer::new_for_benchmarks(allocator, &self.source_text, source_type);
-        while lexer.next_token().kind != Kind::Eof {}
+        while lexer.next_token().kind() != Kind::Eof {}
         assert!(lexer.errors().is_empty());
     }
 

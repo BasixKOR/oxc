@@ -21,7 +21,7 @@ impl<'a> ParserImpl<'a> {
                 Self::parse_object_expression_property,
             )
         });
-        self.eat(Kind::Comma); // Trailing Comma
+        self.bump(Kind::Comma); // Trailing Comma
         self.expect(Kind::RCurly);
         self.ast.alloc_object_expression(self.end_span(span), object_expression_properties)
     }
@@ -46,7 +46,7 @@ impl<'a> ParserImpl<'a> {
             // AsyncGeneratorMethod
             Kind::Async
                 if (class_element_name || peek_kind == Kind::Star)
-                    && !self.peek_token().is_on_new_line =>
+                    && !self.peek_token().is_on_new_line() =>
             {
                 self.parse_property_definition_method()
             }

@@ -290,9 +290,9 @@ impl<'a> ParserImpl<'a> {
         let span = self.start_span();
         let token = self.cur_token();
         let src = self.cur_src();
-        let value = match token.kind {
+        let value = match token.kind() {
             Kind::Decimal | Kind::Binary | Kind::Octal | Kind::Hex => {
-                parse_int(src, token.kind, token.has_separator())
+                parse_int(src, token.kind(), token.has_separator())
             }
             Kind::Float | Kind::PositiveExponential | Kind::NegativeExponential => {
                 parse_float(src, token.has_separator())
@@ -303,7 +303,7 @@ impl<'a> ParserImpl<'a> {
             self.set_fatal_error(diagnostics::invalid_number(err, token.span()));
             0.0 // Dummy value
         });
-        let base = match token.kind {
+        let base = match token.kind() {
             Kind::Decimal => NumberBase::Decimal,
             Kind::Float => NumberBase::Float,
             Kind::Binary => NumberBase::Binary,
@@ -334,7 +334,7 @@ impl<'a> ParserImpl<'a> {
         let token = self.cur_token();
         let raw = self.cur_src();
         let src = raw.strip_suffix('n').unwrap();
-        let _value = parse_big_int(src, token.kind, token.has_separator())
+        let _value = parse_big_int(src, token.kind(), token.has_separator())
             .map_err(|err| diagnostics::invalid_number(err, token.span()));
         self.bump_any();
         self.ast.big_int_literal(self.end_span(span), raw, base)
@@ -346,10 +346,10 @@ impl<'a> ParserImpl<'a> {
         if !self.lexer.errors.is_empty() {
             return self.unexpected();
         }
-        let pattern_start = self.cur_token().start + 1; // +1 to exclude left `/`
+        let pattern_start = self.cur_token().start() + 1; // +1 to exclude left `/`
         let pattern_text = &self.source_text[pattern_start as usize..pattern_end as usize];
         let flags_start = pattern_end + 1; // +1 to include right `/`
-        let flags_text = &self.source_text[flags_start as usize..self.cur_token().end as usize];
+        let flags_text = &self.source_text[flags_start as usize..self.cur_token().end() as usize];
         let raw = self.cur_src();
         self.bump_any();
 
@@ -406,7 +406,7 @@ impl<'a> ParserImpl<'a> {
         }
         let value = self.cur_string();
         let span = self.start_span();
-        let lone_surrogates = self.cur_token().lone_surrogates;
+        let lone_surrogates = self.cur_token().lone_surrogates();
         self.bump_any();
         let span = self.end_span(span);
         // SAFETY:
@@ -547,13 +547,13 @@ impl<'a> ParserImpl<'a> {
         // Also replace `\r` with `\n` in `raw`.
         // If contains `\r`, then `escaped` must be `true` (because `\r` needs unescaping),
         // so we can skip searching for `\r` in common case where contains no escapes.
-        let (cooked, lone_surrogates) = if self.cur_token().escaped {
+        let (cooked, lone_surrogates) = if self.cur_token().escaped() {
             // `cooked = None` when template literal has invalid escape sequence
             let cooked = self.cur_template_string().map(Atom::from);
             if cooked.is_some() && raw.contains('\r') {
                 raw = self.ast.atom(&raw.cow_replace("\r\n", "\n").cow_replace('\r', "\n"));
             }
-            (cooked, self.cur_token().lone_surrogates)
+            (cooked, self.cur_token().lone_surrogates())
         } else {
             (Some(raw), false)
         };
@@ -660,10 +660,8 @@ impl<'a> ParserImpl<'a> {
         }
         // Add `ChainExpression` to `a?.c?.b<c>`;
         if let Expression::TSInstantiationExpression(mut expr) = lhs {
-            expr.expression = self.map_to_chain_expression(
-                expr.expression.span(),
-                expr.expression.take_in(self.ast.allocator),
-            );
+            expr.expression = self
+                .map_to_chain_expression(expr.expression.span(), expr.expression.take_in(self.ast));
             Expression::TSInstantiationExpression(expr)
         } else {
             let span = self.end_span(span);
@@ -774,7 +772,7 @@ impl<'a> ParserImpl<'a> {
             }
 
             if !question_dot {
-                if self.at(Kind::Bang) && !self.cur_token().is_on_new_line && self.is_ts {
+                if self.at(Kind::Bang) && !self.cur_token().is_on_new_line() && self.is_ts {
                     self.bump_any();
                     lhs = self.ast.expression_ts_non_null(self.end_span(lhs_span), lhs);
                     continue;
@@ -851,6 +849,7 @@ impl<'a> ParserImpl<'a> {
         }
 
         let rhs_span = self.start_span();
+        let is_import = self.at(Kind::Import); // Syntax Error for `new import('mod')` but not `new (import('mod'))`.
         let mut optional = false;
         let mut callee = {
             let lhs = self.parse_primary_expression();
@@ -892,7 +891,7 @@ impl<'a> ParserImpl<'a> {
             self.ast.vec()
         };
 
-        if matches!(callee, Expression::ImportExpression(_)) {
+        if is_import && matches!(callee, Expression::ImportExpression(_)) {
             self.error(diagnostics::new_dynamic_import(self.end_span(rhs_span)));
         }
 
@@ -1021,7 +1020,7 @@ impl<'a> ParserImpl<'a> {
         let span = self.start_span();
         let lhs = self.parse_lhs_expression_or_higher();
         // ++ -- postfix update expressions
-        if self.cur_kind().is_update_operator() && !self.cur_token().is_on_new_line {
+        if self.cur_kind().is_update_operator() && !self.cur_token().is_on_new_line() {
             let operator = map_update_operator(self.cur_kind());
             self.bump_any();
             let lhs = SimpleAssignmentTarget::cover(lhs, self);
@@ -1074,6 +1073,7 @@ impl<'a> ParserImpl<'a> {
     ) -> Expression<'a> {
         let lhs_span = self.start_span();
 
+        let lhs_parenthesized = self.at(Kind::LParen);
         // [+In] PrivateIdentifier in ShiftExpression[?Yield, ?Await]
         let lhs = if self.ctx.has_in() && self.at(Kind::PrivateIdentifier) {
             let left = self.parse_private_identifier();
@@ -1093,7 +1093,7 @@ impl<'a> ParserImpl<'a> {
             expr
         };
 
-        self.parse_binary_expression_rest(lhs_span, lhs, lhs_precedence)
+        self.parse_binary_expression_rest(lhs_span, lhs, lhs_parenthesized, lhs_precedence)
     }
 
     /// Section 13.6 - 13.13 Binary Expression
@@ -1101,6 +1101,7 @@ impl<'a> ParserImpl<'a> {
         &mut self,
         lhs_span: u32,
         lhs: Expression<'a>,
+        lhs_parenthesized: bool,
         min_precedence: Precedence,
     ) -> Expression<'a> {
         // Pratt Parsing Algorithm
@@ -1131,7 +1132,7 @@ impl<'a> ParserImpl<'a> {
             }
 
             if self.is_ts && matches!(kind, Kind::As | Kind::Satisfies) {
-                if self.cur_token().is_on_new_line {
+                if self.cur_token().is_on_new_line() {
                     break;
                 }
                 self.bump_any();
@@ -1146,22 +1147,44 @@ impl<'a> ParserImpl<'a> {
             }
 
             self.bump_any(); // bump operator
+            let rhs_parenthesized = self.at(Kind::LParen);
             let rhs = self.parse_binary_expression_or_higher(left_precedence);
 
             lhs = if kind.is_logical_operator() {
-                self.ast.expression_logical(
-                    self.end_span(lhs_span),
-                    lhs,
-                    map_logical_operator(kind),
-                    rhs,
-                )
+                let span = self.end_span(lhs_span);
+                let op = map_logical_operator(kind);
+                // check mixed coalesce
+                if op == LogicalOperator::Coalesce {
+                    let mut maybe_mixed_coalesce_expr = None;
+                    if let Expression::LogicalExpression(rhs) = &rhs {
+                        if !rhs_parenthesized {
+                            maybe_mixed_coalesce_expr = Some(rhs);
+                        }
+                    } else if let Expression::LogicalExpression(lhs) = &lhs {
+                        if !lhs_parenthesized {
+                            maybe_mixed_coalesce_expr = Some(lhs);
+                        }
+                    }
+                    if let Some(expr) = maybe_mixed_coalesce_expr {
+                        if matches!(expr.operator, LogicalOperator::And | LogicalOperator::Or) {
+                            self.error(diagnostics::mixed_coalesce(span));
+                        }
+                    }
+                }
+                self.ast.expression_logical(span, lhs, op, rhs)
             } else if kind.is_binary_operator() {
-                self.ast.expression_binary(
-                    self.end_span(lhs_span),
-                    lhs,
-                    map_binary_operator(kind),
-                    rhs,
-                )
+                let span = self.end_span(lhs_span);
+                let op = map_binary_operator(kind);
+                if op == BinaryOperator::Exponential && !lhs_parenthesized {
+                    if let Some(key) = match lhs {
+                        Expression::AwaitExpression(_) => Some("await"),
+                        Expression::UnaryExpression(_) => Some("unary"),
+                        _ => None,
+                    } {
+                        self.error(diagnostics::unexpected_exponential(key, lhs.span()));
+                    }
+                }
+                self.ast.expression_binary(span, lhs, op, rhs)
             } else {
                 break;
             };
@@ -1236,7 +1259,9 @@ impl<'a> ParserImpl<'a> {
         }
 
         let span = self.start_span();
+        let lhs_parenthesized = self.at(Kind::LParen);
         let lhs = self.parse_binary_expression_or_higher(Precedence::Comma);
+        let lhs_parenthesized_span = lhs_parenthesized.then(|| self.end_span(span));
         let kind = self.cur_kind();
 
         // `x => {}`
@@ -1259,6 +1284,7 @@ impl<'a> ParserImpl<'a> {
             return self.parse_assignment_expression_recursive(
                 span,
                 lhs,
+                lhs_parenthesized_span,
                 allow_return_type_in_arrow_function,
             );
         }
@@ -1319,6 +1345,7 @@ impl<'a> ParserImpl<'a> {
         &mut self,
         span: u32,
         lhs: Expression<'a>,
+        left_parenthesized_span: Option<Span>,
         allow_return_type_in_arrow_function: bool,
     ) -> Expression<'a> {
         let operator = map_assignment_operator(self.cur_kind());
@@ -1328,6 +1355,12 @@ impl<'a> ParserImpl<'a> {
         // AssignmentPattern[Yield, Await] :
         //    ObjectAssignmentPattern
         //    ArrayAssignmentPattern
+        if let Some(span) = left_parenthesized_span {
+            //  `({}) = x;`, `([]) = x;`
+            if matches!(lhs, Expression::ObjectExpression(_) | Expression::ArrayExpression(_)) {
+                self.error(diagnostics::invalid_assignment(span));
+            }
+        }
         let left = AssignmentTarget::cover(lhs, self);
         self.bump_any();
         let right =
@@ -1396,7 +1429,7 @@ impl<'a> ParserImpl<'a> {
         if self.at(Kind::Await) {
             let peek_token = self.peek_token();
             // Allow arrow expression `await => {}`
-            if peek_token.kind == Kind::Arrow {
+            if peek_token.kind() == Kind::Arrow {
                 return false;
             }
             if self.ctx.has_await() {
@@ -1405,13 +1438,13 @@ impl<'a> ParserImpl<'a> {
             // The following expressions are ambiguous
             // await + 0, await - 0, await ( 0 ), await [ 0 ], await / 0 /u, await ``, await of []
             if matches!(
-                peek_token.kind,
+                peek_token.kind(),
                 Kind::Of | Kind::LParen | Kind::LBrack | Kind::Slash | Kind::RegExp
             ) {
                 return false;
             }
 
-            return !peek_token.is_on_new_line && peek_token.kind.is_after_await_or_yield();
+            return !peek_token.is_on_new_line() && peek_token.kind().is_after_await_or_yield();
         }
         false
     }
@@ -1420,13 +1453,13 @@ impl<'a> ParserImpl<'a> {
         if self.at(Kind::Yield) {
             let peek_token = self.peek_token();
             // Allow arrow expression `yield => {}`
-            if peek_token.kind == Kind::Arrow {
+            if peek_token.kind() == Kind::Arrow {
                 return false;
             }
             if self.ctx.has_yield() {
                 return true;
             }
-            return !peek_token.is_on_new_line && peek_token.kind.is_after_await_or_yield();
+            return !peek_token.is_on_new_line() && peek_token.kind().is_after_await_or_yield();
         }
         false
     }

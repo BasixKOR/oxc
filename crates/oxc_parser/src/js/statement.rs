@@ -117,7 +117,7 @@ impl<'a> ParserImpl<'a> {
             Kind::Async
                 if {
                     let peek_token = self.peek_token();
-                    peek_token.kind == Kind::Function && !peek_token.is_on_new_line
+                    peek_token.kind() == Kind::Function && !peek_token.is_on_new_line()
                 } =>
             {
                 self.parse_function_declaration(stmt_ctx)
@@ -131,7 +131,7 @@ impl<'a> ParserImpl<'a> {
             Kind::Using
                 if {
                     let peek_token = self.peek_token();
-                    peek_token.kind.is_binding_identifier() && !peek_token.is_on_new_line
+                    peek_token.kind().is_binding_identifier() && !peek_token.is_on_new_line()
                 } =>
             {
                 self.parse_using_statement()
@@ -140,9 +140,9 @@ impl<'a> ParserImpl<'a> {
             Kind::Await
                 if {
                     let peek_token = self.peek_token();
-                    if peek_token.kind == Kind::Using && !peek_token.is_on_new_line {
+                    if peek_token.kind() == Kind::Using && !peek_token.is_on_new_line() {
                         let peek2_token = self.nth(2);
-                        peek2_token.kind.is_binding_identifier() && !peek2_token.is_on_new_line
+                        peek2_token.kind().is_binding_identifier() && !peek2_token.is_on_new_line()
                     } else {
                         false
                     }
@@ -345,9 +345,20 @@ impl<'a> ParserImpl<'a> {
         {
             return self.parse_variable_declaration_for_statement(span, r#await);
         }
+        // [+Using, +Await] await [no LineTerminator here] using [no LineTerminator here]
+        if self.cur_kind() == Kind::Await
+            && !self.peek_token().is_on_new_line()
+            && self.peek_kind() == Kind::Using
+            && !self.nth(2).is_on_new_line()
+        {
+            return self.parse_using_declaration_for_statement(span, r#await);
+        }
 
-        if (self.cur_kind() == Kind::Await && self.peek_kind() == Kind::Using)
-            || (self.cur_kind() == Kind::Using && self.peek_kind() == Kind::Ident)
+        // [+Using] using [no LineTerminator here] ForBinding[?Yield, ?Await, ~Pattern]
+        if self.cur_kind() == Kind::Using
+            && !self.peek_token().is_on_new_line()
+            && self.peek_kind() != Kind::Of
+            && self.peek_kind().is_binding_identifier()
         {
             return self.parse_using_declaration_for_statement(span, r#await);
         }
@@ -572,7 +583,7 @@ impl<'a> ParserImpl<'a> {
     fn parse_throw_statement(&mut self) -> Statement<'a> {
         let span = self.start_span();
         self.bump_any(); // advance `throw`
-        if self.cur_token().is_on_new_line {
+        if self.cur_token().is_on_new_line() {
             self.error(diagnostics::illegal_newline(
                 "throw",
                 self.end_span(span),
