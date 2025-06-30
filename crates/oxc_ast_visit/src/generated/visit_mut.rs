@@ -1575,8 +1575,10 @@ pub mod walk_mut {
         visitor: &mut V,
         it: &mut TemplateElement<'a>,
     ) {
-        // No `AstType` for this type
+        let kind = AstType::TemplateElement;
+        visitor.enter_node(kind);
         visitor.visit_span(&mut it.span);
+        visitor.leave_node(kind);
     }
 
     #[inline]
@@ -3854,9 +3856,11 @@ pub mod walk_mut {
         visitor: &mut V,
         it: &mut TSInterfaceBody<'a>,
     ) {
-        // No `AstType` for this type
+        let kind = AstType::TSInterfaceBody;
+        visitor.enter_node(kind);
         visitor.visit_span(&mut it.span);
         visitor.visit_ts_signatures(&mut it.body);
+        visitor.leave_node(kind);
     }
 
     #[inline]
@@ -3895,10 +3899,12 @@ pub mod walk_mut {
         visitor: &mut V,
         it: &mut TSIndexSignature<'a>,
     ) {
-        // No `AstType` for this type
+        let kind = AstType::TSIndexSignature;
+        visitor.enter_node(kind);
         visitor.visit_span(&mut it.span);
         visitor.visit_ts_index_signature_names(&mut it.parameters);
         visitor.visit_ts_type_annotation(&mut it.type_annotation);
+        visitor.leave_node(kind);
     }
 
     #[inline]
@@ -4167,13 +4173,15 @@ pub mod walk_mut {
         visitor: &mut V,
         it: &mut TSConstructorType<'a>,
     ) {
-        // No `AstType` for this type
+        let kind = AstType::TSConstructorType;
+        visitor.enter_node(kind);
         visitor.visit_span(&mut it.span);
         if let Some(type_parameters) = &mut it.type_parameters {
             visitor.visit_ts_type_parameter_declaration(type_parameters);
         }
         visitor.visit_formal_parameters(&mut it.params);
         visitor.visit_ts_type_annotation(&mut it.return_type);
+        visitor.leave_node(kind);
     }
 
     #[inline]

@@ -229,7 +229,15 @@ impl<'a> Format<'a> for AstNode<'a, TaggedTemplateExpression<'a>> {
 
 impl<'a> Format<'a> for AstNode<'a, TemplateElement<'a>> {
     fn fmt(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        self.write(f)
+        format_leading_comments(self.span).fmt(f)?;
+        let result = self.write(f);
+        format_trailing_comments(
+            &self.parent.as_sibling_node(),
+            &SiblingNode::from(self.inner),
+            self.following_node.as_ref(),
+        )
+        .fmt(f)?;
+        result
     }
 }
 
@@ -2545,7 +2553,15 @@ impl<'a> Format<'a> for AstNode<'a, TSInterfaceDeclaration<'a>> {
 
 impl<'a> Format<'a> for AstNode<'a, TSInterfaceBody<'a>> {
     fn fmt(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        self.write(f)
+        format_leading_comments(self.span).fmt(f)?;
+        let result = self.write(f);
+        format_trailing_comments(
+            &self.parent.as_sibling_node(),
+            &SiblingNode::from(self.inner),
+            self.following_node.as_ref(),
+        )
+        .fmt(f)?;
+        result
     }
 }
 
@@ -2571,7 +2587,15 @@ impl<'a> Format<'a> for AstNode<'a, TSSignature<'a>> {
 
 impl<'a> Format<'a> for AstNode<'a, TSIndexSignature<'a>> {
     fn fmt(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        self.write(f)
+        format_leading_comments(self.span).fmt(f)?;
+        let result = self.write(f);
+        format_trailing_comments(
+            &self.parent.as_sibling_node(),
+            &SiblingNode::from(self.inner),
+            self.following_node.as_ref(),
+        )
+        .fmt(f)?;
+        result
     }
 }
 
@@ -2775,7 +2799,15 @@ impl<'a> Format<'a> for AstNode<'a, TSFunctionType<'a>> {
 
 impl<'a> Format<'a> for AstNode<'a, TSConstructorType<'a>> {
     fn fmt(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        self.write(f)
+        format_leading_comments(self.span).fmt(f)?;
+        let result = self.write(f);
+        format_trailing_comments(
+            &self.parent.as_sibling_node(),
+            &SiblingNode::from(self.inner),
+            self.following_node.as_ref(),
+        )
+        .fmt(f)?;
+        result
     }
 }
 

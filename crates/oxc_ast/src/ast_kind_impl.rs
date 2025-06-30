@@ -222,6 +222,7 @@ impl AstKind<'_> {
                 t.quasi().map_or_else(|| "None".into(), |q| format!("Some({q})"))
             )
             .into(),
+            Self::TemplateElement(_) => "TemplateElement".into(),
 
             Self::MetaProperty(_) => "MetaProperty".into(),
             Self::Super(_) => "Super".into(),
@@ -403,6 +404,9 @@ impl AstKind<'_> {
             Self::TSMappedType(_) => "TSMappedType".into(),
             Self::TSConstructSignatureDeclaration(_) => "TSConstructSignatureDeclaration".into(),
             Self::TSExportAssignment(_) => "TSExportAssignment".into(),
+            Self::TSConstructorType(_) => "TSConstructorType".into(),
+            Self::TSInterfaceBody(_) => "TSInterfaceBody".into(),
+            Self::TSIndexSignature(_) => "TSIndexSignature".into(),
             Self::V8IntrinsicExpression(_) => "V8IntrinsicExpression".into(),
 
             Self::JSDocNullableType(_) => "JSDocNullableType".into(),

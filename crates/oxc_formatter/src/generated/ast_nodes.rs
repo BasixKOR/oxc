@@ -40,6 +40,7 @@ pub enum AstNodes<'a> {
     PropertyKey(&'a AstNode<'a, PropertyKey<'a>>),
     TemplateLiteral(&'a AstNode<'a, TemplateLiteral<'a>>),
     TaggedTemplateExpression(&'a AstNode<'a, TaggedTemplateExpression<'a>>),
+    TemplateElement(&'a AstNode<'a, TemplateElement<'a>>),
     ComputedMemberExpression(&'a AstNode<'a, ComputedMemberExpression<'a>>),
     StaticMemberExpression(&'a AstNode<'a, StaticMemberExpression<'a>>),
     PrivateFieldExpression(&'a AstNode<'a, PrivateFieldExpression<'a>>),
@@ -182,7 +183,9 @@ pub enum AstNodes<'a> {
     TSTypeAliasDeclaration(&'a AstNode<'a, TSTypeAliasDeclaration<'a>>),
     TSClassImplements(&'a AstNode<'a, TSClassImplements<'a>>),
     TSInterfaceDeclaration(&'a AstNode<'a, TSInterfaceDeclaration<'a>>),
+    TSInterfaceBody(&'a AstNode<'a, TSInterfaceBody<'a>>),
     TSPropertySignature(&'a AstNode<'a, TSPropertySignature<'a>>),
+    TSIndexSignature(&'a AstNode<'a, TSIndexSignature<'a>>),
     TSCallSignatureDeclaration(&'a AstNode<'a, TSCallSignatureDeclaration<'a>>),
     TSMethodSignature(&'a AstNode<'a, TSMethodSignature<'a>>),
     TSConstructSignatureDeclaration(&'a AstNode<'a, TSConstructSignatureDeclaration<'a>>),
@@ -195,6 +198,7 @@ pub enum AstNodes<'a> {
     TSInferType(&'a AstNode<'a, TSInferType<'a>>),
     TSTypeQuery(&'a AstNode<'a, TSTypeQuery<'a>>),
     TSImportType(&'a AstNode<'a, TSImportType<'a>>),
+    TSConstructorType(&'a AstNode<'a, TSConstructorType<'a>>),
     TSMappedType(&'a AstNode<'a, TSMappedType<'a>>),
     TSTemplateLiteralType(&'a AstNode<'a, TSTemplateLiteralType<'a>>),
     TSAsExpression(&'a AstNode<'a, TSAsExpression<'a>>),
@@ -2323,6 +2327,7 @@ impl<'a> AstNodes<'a> {
             Self::PropertyKey(n) => n.span(),
             Self::TemplateLiteral(n) => n.span(),
             Self::TaggedTemplateExpression(n) => n.span(),
+            Self::TemplateElement(n) => n.span(),
             Self::ComputedMemberExpression(n) => n.span(),
             Self::StaticMemberExpression(n) => n.span(),
             Self::PrivateFieldExpression(n) => n.span(),
@@ -2465,7 +2470,9 @@ impl<'a> AstNodes<'a> {
             Self::TSTypeAliasDeclaration(n) => n.span(),
             Self::TSClassImplements(n) => n.span(),
             Self::TSInterfaceDeclaration(n) => n.span(),
+            Self::TSInterfaceBody(n) => n.span(),
             Self::TSPropertySignature(n) => n.span(),
+            Self::TSIndexSignature(n) => n.span(),
             Self::TSCallSignatureDeclaration(n) => n.span(),
             Self::TSMethodSignature(n) => n.span(),
             Self::TSConstructSignatureDeclaration(n) => n.span(),
@@ -2478,6 +2485,7 @@ impl<'a> AstNodes<'a> {
             Self::TSInferType(n) => n.span(),
             Self::TSTypeQuery(n) => n.span(),
             Self::TSImportType(n) => n.span(),
+            Self::TSConstructorType(n) => n.span(),
             Self::TSMappedType(n) => n.span(),
             Self::TSTemplateLiteralType(n) => n.span(),
             Self::TSAsExpression(n) => n.span(),
@@ -2512,6 +2520,7 @@ impl<'a> AstNodes<'a> {
             Self::PropertyKey(n) => n.parent,
             Self::TemplateLiteral(n) => n.parent,
             Self::TaggedTemplateExpression(n) => n.parent,
+            Self::TemplateElement(n) => n.parent,
             Self::ComputedMemberExpression(n) => n.parent,
             Self::StaticMemberExpression(n) => n.parent,
             Self::PrivateFieldExpression(n) => n.parent,
@@ -2654,7 +2663,9 @@ impl<'a> AstNodes<'a> {
             Self::TSTypeAliasDeclaration(n) => n.parent,
             Self::TSClassImplements(n) => n.parent,
             Self::TSInterfaceDeclaration(n) => n.parent,
+            Self::TSInterfaceBody(n) => n.parent,
             Self::TSPropertySignature(n) => n.parent,
+            Self::TSIndexSignature(n) => n.parent,
             Self::TSCallSignatureDeclaration(n) => n.parent,
             Self::TSMethodSignature(n) => n.parent,
             Self::TSConstructSignatureDeclaration(n) => n.parent,
@@ -2667,6 +2678,7 @@ impl<'a> AstNodes<'a> {
             Self::TSInferType(n) => n.parent,
             Self::TSTypeQuery(n) => n.parent,
             Self::TSImportType(n) => n.parent,
+            Self::TSConstructorType(n) => n.parent,
             Self::TSMappedType(n) => n.parent,
             Self::TSTemplateLiteralType(n) => n.parent,
             Self::TSAsExpression(n) => n.parent,
@@ -2701,6 +2713,7 @@ impl<'a> AstNodes<'a> {
             Self::PropertyKey(n) => n.parent.as_sibling_node(),
             Self::TemplateLiteral(n) => SiblingNode::from(n.inner),
             Self::TaggedTemplateExpression(n) => SiblingNode::from(n.inner),
+            Self::TemplateElement(n) => SiblingNode::from(n.inner),
             Self::ComputedMemberExpression(n) => SiblingNode::from(n.inner),
             Self::StaticMemberExpression(n) => SiblingNode::from(n.inner),
             Self::PrivateFieldExpression(n) => SiblingNode::from(n.inner),
@@ -2843,7 +2856,9 @@ impl<'a> AstNodes<'a> {
             Self::TSTypeAliasDeclaration(n) => SiblingNode::from(n.inner),
             Self::TSClassImplements(n) => SiblingNode::from(n.inner),
             Self::TSInterfaceDeclaration(n) => SiblingNode::from(n.inner),
+            Self::TSInterfaceBody(n) => SiblingNode::from(n.inner),
             Self::TSPropertySignature(n) => SiblingNode::from(n.inner),
+            Self::TSIndexSignature(n) => SiblingNode::from(n.inner),
             Self::TSCallSignatureDeclaration(n) => SiblingNode::from(n.inner),
             Self::TSMethodSignature(n) => SiblingNode::from(n.inner),
             Self::TSConstructSignatureDeclaration(n) => SiblingNode::from(n.inner),
@@ -2856,6 +2871,7 @@ impl<'a> AstNodes<'a> {
             Self::TSInferType(n) => SiblingNode::from(n.inner),
             Self::TSTypeQuery(n) => SiblingNode::from(n.inner),
             Self::TSImportType(n) => SiblingNode::from(n.inner),
+            Self::TSConstructorType(n) => SiblingNode::from(n.inner),
             Self::TSMappedType(n) => SiblingNode::from(n.inner),
             Self::TSTemplateLiteralType(n) => SiblingNode::from(n.inner),
             Self::TSAsExpression(n) => SiblingNode::from(n.inner),
@@ -2890,6 +2906,7 @@ impl<'a> AstNodes<'a> {
             Self::PropertyKey(_) => "PropertyKey",
             Self::TemplateLiteral(_) => "TemplateLiteral",
             Self::TaggedTemplateExpression(_) => "TaggedTemplateExpression",
+            Self::TemplateElement(_) => "TemplateElement",
             Self::ComputedMemberExpression(_) => "ComputedMemberExpression",
             Self::StaticMemberExpression(_) => "StaticMemberExpression",
             Self::PrivateFieldExpression(_) => "PrivateFieldExpression",
@@ -3032,7 +3049,9 @@ impl<'a> AstNodes<'a> {
             Self::TSTypeAliasDeclaration(_) => "TSTypeAliasDeclaration",
             Self::TSClassImplements(_) => "TSClassImplements",
             Self::TSInterfaceDeclaration(_) => "TSInterfaceDeclaration",
+            Self::TSInterfaceBody(_) => "TSInterfaceBody",
             Self::TSPropertySignature(_) => "TSPropertySignature",
+            Self::TSIndexSignature(_) => "TSIndexSignature",
             Self::TSCallSignatureDeclaration(_) => "TSCallSignatureDeclaration",
             Self::TSMethodSignature(_) => "TSMethodSignature",
             Self::TSConstructSignatureDeclaration(_) => "TSConstructSignatureDeclaration",
@@ -3045,6 +3064,7 @@ impl<'a> AstNodes<'a> {
             Self::TSInferType(_) => "TSInferType",
             Self::TSTypeQuery(_) => "TSTypeQuery",
             Self::TSImportType(_) => "TSImportType",
+            Self::TSConstructorType(_) => "TSConstructorType",
             Self::TSMappedType(_) => "TSMappedType",
             Self::TSTemplateLiteralType(_) => "TSTemplateLiteralType",
             Self::TSAsExpression(_) => "TSAsExpression",
@@ -6777,9 +6797,12 @@ impl<'a> AstNode<'a, ClassElement<'a>> {
                 }))
             }
             ClassElement::TSIndexSignature(s) => {
-                panic!(
-                    "No kind for current enum variant yet, please see `tasks/ast_tools/src/generators/ast_kind.rs`"
-                )
+                AstNodes::TSIndexSignature(self.allocator.alloc(AstNode {
+                    inner: s.as_ref(),
+                    parent,
+                    allocator: self.allocator,
+                    following_node: self.following_node,
+                }))
             }
         };
         self.allocator.alloc(node)
@@ -8923,9 +8946,12 @@ impl<'a> AstNode<'a, TSType<'a>> {
                 }))
             }
             TSType::TSConstructorType(s) => {
-                panic!(
-                    "No kind for current enum variant yet, please see `tasks/ast_tools/src/generators/ast_kind.rs`"
-                )
+                AstNodes::TSConstructorType(self.allocator.alloc(AstNode {
+                    inner: s.as_ref(),
+                    parent,
+                    allocator: self.allocator,
+                    following_node: self.following_node,
+                }))
             }
             TSType::TSFunctionType(s) => {
                 panic!(
@@ -9858,7 +9884,7 @@ impl<'a> AstNode<'a, TSInterfaceBody<'a>> {
         self.allocator.alloc(AstNode {
             inner: &self.inner.body,
             allocator: self.allocator,
-            parent: self.parent,
+            parent: self.allocator.alloc(AstNodes::TSInterfaceBody(transmute_self(self))),
             following_node,
         })
     }
@@ -9917,9 +9943,12 @@ impl<'a> AstNode<'a, TSSignature<'a>> {
         let parent = self.parent;
         let node = match self.inner {
             TSSignature::TSIndexSignature(s) => {
-                panic!(
-                    "No kind for current enum variant yet, please see `tasks/ast_tools/src/generators/ast_kind.rs`"
-                )
+                AstNodes::TSIndexSignature(self.allocator.alloc(AstNode {
+                    inner: s.as_ref(),
+                    parent,
+                    allocator: self.allocator,
+                    following_node: self.following_node,
+                }))
             }
             TSSignature::TSPropertySignature(s) => {
                 AstNodes::TSPropertySignature(self.allocator.alloc(AstNode {
@@ -9977,7 +10006,7 @@ impl<'a> AstNode<'a, TSIndexSignature<'a>> {
         self.allocator.alloc(AstNode {
             inner: &self.inner.parameters,
             allocator: self.allocator,
-            parent: self.parent,
+            parent: self.allocator.alloc(AstNodes::TSIndexSignature(transmute_self(self))),
             following_node,
         })
     }
@@ -9988,7 +10017,7 @@ impl<'a> AstNode<'a, TSIndexSignature<'a>> {
         self.allocator.alloc(AstNode {
             inner: self.inner.type_annotation.as_ref(),
             allocator: self.allocator,
-            parent: self.parent,
+            parent: self.allocator.alloc(AstNodes::TSIndexSignature(transmute_self(self))),
             following_node,
         })
     }
@@ -10748,7 +10777,7 @@ impl<'a> AstNode<'a, TSConstructorType<'a>> {
             .alloc(self.inner.type_parameters.as_ref().map(|inner| AstNode {
                 inner: inner.as_ref(),
                 allocator: self.allocator,
-                parent: self.parent,
+                parent: self.allocator.alloc(AstNodes::TSConstructorType(transmute_self(self))),
                 following_node,
             }))
             .as_ref()
@@ -10760,7 +10789,7 @@ impl<'a> AstNode<'a, TSConstructorType<'a>> {
         self.allocator.alloc(AstNode {
             inner: self.inner.params.as_ref(),
             allocator: self.allocator,
-            parent: self.parent,
+            parent: self.allocator.alloc(AstNodes::TSConstructorType(transmute_self(self))),
             following_node,
         })
     }
@@ -10771,7 +10800,7 @@ impl<'a> AstNode<'a, TSConstructorType<'a>> {
         self.allocator.alloc(AstNode {
             inner: self.inner.return_type.as_ref(),
             allocator: self.allocator,
-            parent: self.parent,
+            parent: self.allocator.alloc(AstNodes::TSConstructorType(transmute_self(self))),
             following_node,
         })
     }
