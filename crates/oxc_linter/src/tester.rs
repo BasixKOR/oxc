@@ -207,7 +207,7 @@ impl RuntimeFileSystem for TesterFileSystem {
         read_to_arena_str(path, allocator)
     }
 
-    fn write_file(&self, _path: &Path, _content: String) -> Result<(), std::io::Error> {
+    fn write_file(&self, _path: &Path, _content: &str) -> Result<(), std::io::Error> {
         panic!("writing file should not be allowed in Tester");
     }
 }
@@ -507,10 +507,14 @@ impl Tester {
                 eslint_config
                     .map_or_else(ConfigStoreBuilder::empty, |mut v| {
                         v.as_object_mut().unwrap().insert("categories".into(), json!({}));
-                        ConfigStoreBuilder::from_oxlintrc(true, Oxlintrc::deserialize(v).unwrap())
-                            .unwrap()
+                        ConfigStoreBuilder::from_oxlintrc(
+                            true,
+                            Oxlintrc::deserialize(v).unwrap(),
+                            None,
+                        )
+                        .unwrap()
                     })
-                    .with_plugins(self.plugins)
+                    .with_plugins(self.plugins.union(LintPlugins::from(self.plugin_name)))
                     .with_rule(rule, AllowWarnDeny::Warn)
                     .build(),
                 FxHashMap::default(),

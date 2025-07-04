@@ -1,4 +1,4 @@
-use oxc_allocator::{Address, Vec};
+use oxc_allocator::{Address, Vec as ArenaVec};
 use oxc_ast::{ast::*, match_expression};
 use oxc_span::GetSpan;
 
@@ -8,8 +8,9 @@ use crate::{
         BufferExtensions, Comments, FormatElement, FormatError, Formatter, VecBuffer,
         format_element,
         prelude::{
-            FormatElements, Tag, empty_line, expand_parent, format_once, format_with,
-            get_lines_before, group, soft_block_indent, soft_line_break_or_space, space,
+            FormatElements, MemoizeFormat, Tag, empty_line, expand_parent, format_once,
+            format_with, get_lines_before, group, soft_block_indent, soft_line_break_or_space,
+            space,
         },
         separated::FormatSeparatedIter,
         trivia::{DanglingIndentMode, format_dangling_comments},
@@ -21,6 +22,10 @@ use crate::{
         write_arguments_multi_line,
     },
     write,
+    write::{
+        arrow_function_expression::is_multiline_template_starting_on_same_line,
+        parameter_list::has_only_simple_parameters,
+    },
 };
 
 use super::{
@@ -31,7 +36,7 @@ use super::{
     },
 };
 
-impl<'a> Format<'a> for AstNode<'a, Vec<'a, Argument<'a>>> {
+impl<'a> Format<'a> for AstNode<'a, ArenaVec<'a, Argument<'a>>> {
     fn fmt(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
         let l_paren_token = "(";
         let r_paren_token = ")";
@@ -54,17 +59,18 @@ impl<'a> Format<'a> for AstNode<'a, Vec<'a, Argument<'a>>> {
                 (false, false)
             };
 
-        let is_first_arg_string_literal_or_template = if self.len() == 2 {
-            matches!(
+        let is_first_arg_string_literal_or_template = self.len() != 2
+            || matches!(
                 self.as_ref().first(),
-                Some(Argument::StringLiteral(_) | Argument::TemplateLiteral(_))
-            )
-        } else {
-            true
-        };
+                Some(
+                    Argument::StringLiteral(_)
+                        | Argument::TemplateLiteral(_)
+                        | Argument::TaggedTemplateExpression(_)
+                )
+            );
 
         if is_commonjs_or_amd_call
-            // || is_multiline_template_only_args(node)
+            || is_multiline_template_only_args(self, f.source_text())
             || is_react_hook_with_deps_array(self, f.comments())
             || (is_test_call && is_first_arg_string_literal_or_template)
         {
@@ -88,7 +94,7 @@ impl<'a> Format<'a> for AstNode<'a, Vec<'a, Argument<'a>>> {
         let last_index = self.len().saturating_sub(1);
         let mut has_empty_line = false;
 
-        let arguments: std::vec::Vec<_> = self
+        let arguments: Vec<_> = self
             .iter()
             .enumerate()
             .map(|(index, element)| {
@@ -221,15 +227,12 @@ impl<'a> FormatCallArgument<'a, '_> {
                             function
                         )?;
                     }
-                    AstNodes::ArrowFunctionExpression(arrow) => write!(
+                    AstNodes::ArrowFunctionExpression(arrow) => arrow.fmt_with_options(
+                        FormatJsArrowFunctionExpressionOptions {
+                            body_cache_mode: cache_mode,
+                            ..FormatJsArrowFunctionExpressionOptions::default()
+                        },
                         f,
-                        FormatJsArrowFunctionExpression::new_with_options(
-                            arrow,
-                            FormatJsArrowFunctionExpressionOptions {
-                                body_cache_mode: cache_mode,
-                                ..FormatJsArrowFunctionExpressionOptions::default()
-                            },
-                        )
                     )?,
                     _ => write!(f, element)?,
                 }
@@ -304,13 +307,12 @@ pub fn is_function_composition_args(args: &[Argument<'_>]) -> bool {
 pub struct FormatAllArgsBrokenOut<'a, 'b> {
     pub args: &'b [FormatCallArgument<'a, 'b>],
     pub expand: bool,
-    pub node: &'b AstNode<'a, Vec<'a, Argument<'a>>>,
+    pub node: &'b AstNode<'a, ArenaVec<'a, Argument<'a>>>,
 }
 
 impl<'a> Format<'a> for FormatAllArgsBrokenOut<'a, '_> {
     fn fmt(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        // let is_inside_import = self.node.parent::<JsImportCallExpression>().is_some();
-        let is_inside_import = false;
+        let is_inside_import = matches!(self.node.parent, AstNodes::ImportExpression(_));
 
         write!(
             f,
@@ -341,7 +343,7 @@ impl<'a> Format<'a> for FormatAllArgsBrokenOut<'a, '_> {
 }
 
 pub fn arguments_grouped_layout(
-    args: &AstNode<Vec<Argument>>,
+    args: &AstNode<ArenaVec<Argument>>,
     f: &Formatter<'_, '_>,
 ) -> Option<GroupedCallArgumentLayout> {
     if should_group_first_argument(args, f) {
@@ -354,7 +356,7 @@ pub fn arguments_grouped_layout(
 }
 
 /// Checks if the first argument requires grouping
-fn should_group_first_argument(args: &AstNode<Vec<Argument>>, f: &Formatter<'_, '_>) -> bool {
+fn should_group_first_argument(args: &AstNode<ArenaVec<Argument>>, f: &Formatter<'_, '_>) -> bool {
     let mut iter = args.iter();
     match (iter.next().and_then(|a| a.as_expression()), iter.next().and_then(|a| a.as_expression()))
     {
@@ -398,7 +400,7 @@ fn should_group_first_argument(args: &AstNode<Vec<Argument>>, f: &Formatter<'_, 
 }
 
 /// Checks if the last argument should be grouped.
-fn should_group_last_argument(args: &AstNode<Vec<Argument>>, f: &Formatter<'_, '_>) -> bool {
+fn should_group_last_argument(args: &AstNode<ArenaVec<Argument>>, f: &Formatter<'_, '_>) -> bool {
     let mut iter = args.as_ref().iter();
     let last = iter.next_back();
 
@@ -659,14 +661,11 @@ fn can_group_arrow_function_expression_argument(
 }
 
 fn write_grouped_arguments<'a, 'b>(
-    call_arguments: &'b AstNode<'a, Vec<'a, Argument<'a>>>,
-    mut arguments: std::vec::Vec<FormatCallArgument<'a, 'b>>,
+    call_arguments: &'b AstNode<'a, ArenaVec<'a, Argument<'a>>>,
+    mut arguments: Vec<FormatCallArgument<'a, 'b>>,
     group_layout: GroupedCallArgumentLayout,
     f: &mut Formatter<'_, 'a>,
 ) -> FormatResult<()> {
-    let l_paren_token = "(";
-    let r_paren_token = ")";
-
     let grouped_breaks = {
         let (grouped_arg, other_args) = match group_layout {
             GroupedCallArgumentLayout::GroupedFirstArgument => {
@@ -709,6 +708,11 @@ fn write_grouped_arguments<'a, 'b>(
         grouped_arg.will_break(f)
     };
 
+    // We now cache the delimiter tokens. This is needed because `[crate::best_fitting]` will try to
+    // print each version first
+    let l_paren_token = "(".memoized();
+    let r_paren_token = ")".memoized();
+
     // First write the most expanded variant because it needs `arguments`.
     let most_expanded = {
         let mut buffer = VecBuffer::new(f.state_mut());
@@ -746,8 +750,9 @@ fn write_grouped_arguments<'a, 'b>(
             };
 
             FormatGroupedArgument { argument, single_argument_list: last_index == 0, layout }
+                .memoized()
         })
-        .collect::<std::vec::Vec<_>>();
+        .collect::<Vec<_>>();
 
     // Write the most flat variant with the first or last argument grouped.
     let most_flat = {
@@ -889,18 +894,14 @@ impl<'a> Format<'a> for FormatGroupedFirstArgument<'a, '_> {
             // Call the arrow function formatting but explicitly passes the call argument layout down
             // so that the arrow function formatting removes any soft line breaks between parameters and the return type.
             AstNodes::ArrowFunctionExpression(arrow) => with_token_tracking_disabled(f, |f| {
-                write!(
+                arrow.fmt_with_options(
+                    FormatJsArrowFunctionExpressionOptions {
+                        body_cache_mode: FunctionBodyCacheMode::Cached,
+                        call_arg_layout: Some(GroupedCallArgumentLayout::GroupedFirstArgument),
+                        ..FormatJsArrowFunctionExpressionOptions::default()
+                    },
                     f,
-                    FormatJsArrowFunctionExpression::new_with_options(
-                        arrow,
-                        FormatJsArrowFunctionExpressionOptions {
-                            body_cache_mode: FunctionBodyCacheMode::Cached,
-                            call_arg_layout: Some(GroupedCallArgumentLayout::GroupedFirstArgument),
-                            ..FormatJsArrowFunctionExpressionOptions::default()
-                        },
-                    )
-                )?;
-
+                );
                 write!(f, ",")
             }),
 
@@ -946,23 +947,14 @@ impl<'a> Format<'a> for FormatGroupedLastArgument<'a, '_> {
             }
 
             AstNodes::ArrowFunctionExpression(arrow) => with_token_tracking_disabled(f, |f| {
-                write!(
+                arrow.fmt_with_options(
+                    FormatJsArrowFunctionExpressionOptions {
+                        body_cache_mode: FunctionBodyCacheMode::Cached,
+                        call_arg_layout: Some(GroupedCallArgumentLayout::GroupedLastArgument),
+                        ..FormatJsArrowFunctionExpressionOptions::default()
+                    },
                     f,
-                    FormatJsArrowFunctionExpression::new_with_options(
-                        arrow,
-                        FormatJsArrowFunctionExpressionOptions {
-                            body_cache_mode: FunctionBodyCacheMode::Cached,
-                            call_arg_layout: Some(GroupedCallArgumentLayout::GroupedLastArgument),
-                            ..FormatJsArrowFunctionExpressionOptions::default()
-                        },
-                    )
-                )?;
-
-                // if let Some(separator) = element.trailing_separator()? {
-                //     write!(f, [format_removed(separator)])?;
-                // }
-
-                Ok(())
+                )
             }),
             _ => self.argument.fmt(f),
         }
@@ -984,33 +976,6 @@ fn with_token_tracking_disabled<'a, F: FnOnce(&mut Formatter<'_, 'a>) -> R, R>(
 
 fn function_has_only_simple_parameters(params: &FormalParameters<'_>) -> bool {
     has_only_simple_parameters(params, false)
-}
-
-/// Tests if all of the parameters of `expression` are simple enough to allow
-/// a function to group.
-fn has_only_simple_parameters(
-    parameters: &FormalParameters<'_>,
-    allow_type_annotations: bool,
-) -> bool {
-    // TODO: flatten
-    parameters.items.iter().all(|parameter| is_simple_parameter(parameter, allow_type_annotations))
-}
-
-/// Tests if the single parameter is "simple", as in a plain identifier with no
-/// explicit type annotation and no initializer:
-///
-/// Examples:
-/// foo             => true
-/// foo?            => true
-/// foo = 'bar'     => false
-/// foo: string     => false
-/// {a, b}          => false
-/// {a, b} = {}     => false
-/// [a, b]          => false
-///
-fn is_simple_parameter(parameter: &FormalParameter<'_>, allow_type_annotations: bool) -> bool {
-    parameter.pattern.get_binding_identifier().is_some()
-        && (allow_type_annotations || parameter.pattern.type_annotation.is_none())
 }
 
 /// Tests if this is a call to commonjs [`require`](https://nodejs.org/api/modules.html#requireid)
@@ -1069,12 +1034,36 @@ fn is_commonjs_or_amd_call(
     }
 }
 
+/// Returns `true` if `arguments` contains a single [multiline template literal argument that starts on its own ](is_multiline_template_starting_on_same_line).
+fn is_multiline_template_only_args(arguments: &[Argument], source_text: &str) -> bool {
+    if arguments.len() != 1 {
+        return false;
+    }
+
+    match arguments.first().unwrap() {
+        Argument::TemplateLiteral(template) => {
+            is_multiline_template_starting_on_same_line(template.span.start, template, source_text)
+        }
+        Argument::TaggedTemplateExpression(template) => {
+            is_multiline_template_starting_on_same_line(
+                template.span.start,
+                &template.quasi,
+                source_text,
+            )
+        }
+        _ => false,
+    }
+}
+
 /// This function is used to check if the code is a hook-like code:
 ///
 /// ```js
 /// useMemo(() => {}, [])
 /// ```
-fn is_react_hook_with_deps_array(arguments: &AstNode<Vec<Argument>>, comments: &Comments) -> bool {
+fn is_react_hook_with_deps_array(
+    arguments: &AstNode<ArenaVec<Argument>>,
+    comments: &Comments,
+) -> bool {
     if arguments.len() > 3 || arguments.len() < 2 {
         return false;
     }
@@ -1128,7 +1117,7 @@ fn is_react_hook_with_deps_array(arguments: &AstNode<Vec<Argument>>, comments: &
 /// [arguments]: CallExpression::arguments
 /// [arrow function expression]: ArrowFunctionExpression
 /// [function expression]: Function
-pub fn is_test_call_expression(call: &CallExpression<'_>) -> bool {
+pub fn is_test_call_expression(call: &AstNode<CallExpression<'_>>) -> bool {
     let callee = &call.callee;
     let arguments = &call.arguments;
 
@@ -1136,13 +1125,13 @@ pub fn is_test_call_expression(call: &CallExpression<'_>) -> bool {
 
     match (args.next(), args.next(), args.next()) {
         (Some(argument), None, None) if arguments.len() == 1 => {
-            if is_angular_test_wrapper(call)
-            // && self
-            //     .parent::<JsCallArgumentList>()
-            //     .and_then(|arguments_list| arguments_list.parent::<JsCallArguments>())
-            //     .and_then(|arguments| arguments.parent::<Self>())
-            //     .is_some_and(|parent| parent.is_test_call_expression().unwrap_or(false))
-            {
+            if is_angular_test_wrapper(call) && {
+                if let AstNodes::CallExpression(call) = call.parent.parent() {
+                    is_test_call_expression(call)
+                } else {
+                    false
+                }
+            } {
                 return matches!(
                     argument,
                     Argument::ArrowFunctionExpression(_) | Argument::FunctionExpression(_)
@@ -1158,9 +1147,7 @@ pub fn is_test_call_expression(call: &CallExpression<'_>) -> bool {
 
         // it("description", ..)
         // it(Test.name, ..)
-        (Some(match_expression!(Argument)), Some(second), third)
-            if arguments.len() <= 3 && contains_a_test_pattern(callee) =>
-        {
+        (_, Some(second), third) if arguments.len() <= 3 && contains_a_test_pattern(callee) => {
             // it('name', callback, duration)
             if !matches!(third, None | Some(Argument::NumericLiteral(_))) {
                 return false;
