@@ -11,6 +11,8 @@ mod decorators;
 mod export_declarations;
 mod function;
 mod import_declaration;
+mod jsx;
+mod member_expression;
 mod object_like;
 mod object_pattern_like;
 mod parameter_list;
@@ -21,6 +23,7 @@ mod try_statement;
 mod type_parameters;
 mod utils;
 mod variable_declaration;
+
 pub use arrow_function_expression::{
     ExpressionLeftSide, FormatJsArrowFunctionExpression, FormatJsArrowFunctionExpressionOptions,
 };
@@ -100,11 +103,7 @@ impl<'a> Format<'a> for AstNode<'a, Vec<'a, Directive<'a>>> {
             return Ok(());
         }
         let source_text = f.context().source_text();
-        let mut join = f.join_nodes_with_hardline();
-        for directive in self {
-            join.entry(directive.span(), &directive);
-        }
-        join.finish()?;
+        f.join_nodes_with_hardline().entries(self).finish()?;
         // if next_sibling's first leading_trivia has more than one new_line, we should add an extra empty line at the end of
         // JsDirectiveList, for example:
         //```js
@@ -203,13 +202,9 @@ impl<'a> Format<'a> for AstNode<'a, Vec<'a, ObjectPropertyKind<'a>>> {
     fn fmt(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
         let trailing_separator = FormatTrailingCommas::ES5.trailing_separator(f.options());
         let source_text = f.context().source_text();
-        let mut join = f.join_nodes_with_soft_line();
-        for formatted in
-            FormatSeparatedIter::new(self.iter(), ",").with_trailing_separator(trailing_separator)
-        {
-            join.entry(formatted.element.span(), &formatted);
-        }
-        join.finish()
+        f.join_nodes_with_soft_line()
+            .entries_with_trailing_separator(self.iter(), ",", trailing_separator)
+            .finish()
     }
 }
 
@@ -289,38 +284,6 @@ impl<'a> FormatWrite<'a> for AstNode<'a, TaggedTemplateExpression<'a>> {
 impl<'a> FormatWrite<'a> for AstNode<'a, TemplateElement<'a>> {
     fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
         write!(f, dynamic_text(self.value().raw.as_str()))
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, ComputedMemberExpression<'a>> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        write!(f, self.object())?;
-
-        if matches!(self.expression, Expression::NumericLiteral(_)) {
-            write!(f, [self.optional().then_some("?."), "[", self.expression(), "]"])
-        } else {
-            write!(
-                f,
-                group(&format_args!(
-                    self.optional().then_some("?."),
-                    "[",
-                    soft_block_indent(self.expression()),
-                    "]"
-                ))
-            )
-        }
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, StaticMemberExpression<'a>> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        write!(f, [self.object(), self.optional().then_some("?"), ".", self.property()])
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, PrivateFieldExpression<'a>> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        write!(f, [self.object(), self.optional().then_some("?"), ".", self.field()])
     }
 }
 
@@ -528,7 +491,45 @@ impl<'a> FormatWrite<'a> for AstNode<'a, Super> {
 
 impl<'a> FormatWrite<'a> for AstNode<'a, AwaitExpression<'a>> {
     fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        write!(f, ["await", space(), self.argument()])
+        let format_inner = format_with(|f| write!(f, ["await", space(), self.argument()]));
+
+        let is_callee_or_object = match self.parent {
+            AstNodes::CallExpression(_)
+            | AstNodes::NewExpression(_)
+            | AstNodes::StaticMemberExpression(_) => true,
+            AstNodes::ComputedMemberExpression(member) => member.object.span() == self.span(),
+            _ => false,
+        };
+
+        if is_callee_or_object {
+            let mut parent = self.parent.parent();
+            let mut ancestor_is_await = false;
+            loop {
+                match parent {
+                    AstNodes::AwaitExpression(_)
+                    | AstNodes::BlockStatement(_)
+                    | AstNodes::FunctionBody(_)
+                    | AstNodes::SwitchCase(_)
+                    | AstNodes::Program(_)
+                    | AstNodes::TSModuleBlock(_) => break,
+                    _ => parent = parent.parent(),
+                }
+            }
+
+            let indented = format_with(|f| write!(f, [soft_block_indent(&format_inner)]));
+
+            return if let AstNodes::AwaitExpression(expr) = parent {
+                if !expr.needs_parentheses(f) {
+                    return write!(f, [group(&indented)]);
+                }
+
+                write!(f, [indented])
+            } else {
+                write!(f, [group(&indented)])
+            };
+        }
+
+        write!(f, [format_inner])
     }
 }
 
@@ -1137,11 +1138,12 @@ impl<'a> FormatWrite<'a> for AstNode<'a, NumericLiteral<'a>> {
 
 impl<'a> FormatWrite<'a> for AstNode<'a, StringLiteral<'a>> {
     fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
+        let is_jsx = matches!(self.parent, AstNodes::JSXAttribute(_));
         FormatLiteralStringToken::new(
             self.span().source_text(f.source_text()),
             self.span(),
             /* jsx */
-            false,
+            is_jsx,
             StringLiteralParentKind::Expression,
         )
         .fmt(f)
@@ -1169,127 +1171,6 @@ impl<'a> FormatWrite<'a> for AstNode<'a, RegExpLiteral<'a>> {
         let flags = flags.iter().collect::<String>();
         let s = StringBuilder::from_strs_array_in([pattern, "/", &flags], f.context().allocator());
         write!(f, dynamic_text(s.into_str(),))
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, JSXElement<'a>> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        write!(f, ["<", self.opening_element().name()])?;
-        for attr in self.opening_element().attributes() {
-            match attr.as_ref() {
-                JSXAttributeItem::Attribute(_) => {
-                    write!(f, hard_space())?;
-                }
-                JSXAttributeItem::SpreadAttribute(_) => {
-                    write!(f, space())?;
-                }
-            }
-            write!(f, attr)?;
-        }
-        if self.closing_element().is_none() {
-            write!(f, [space(), "/"])?;
-        }
-        write!(f, ">")?;
-
-        for child in self.children() {
-            write!(f, child)?;
-        }
-        write!(f, self.closing_element())
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, JSXOpeningElement<'a>> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        // Implemented in JSXElement above due to no access to
-        // no `self_closing`.
-        unreachable!()
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, JSXClosingElement<'a>> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        write!(f, ["</", self.name(), ">"])
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, JSXFragment<'a>> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        write!(f, self.opening_fragment())?;
-        for child in self.children() {
-            write!(f, child)?;
-        }
-        write!(f, self.closing_fragment())
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, JSXOpeningFragment> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        write!(f, "<>")
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, JSXClosingFragment> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        write!(f, "</>")
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, JSXNamespacedName<'a>> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        write!(f, [self.namespace(), ":", self.name()])
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, JSXMemberExpression<'a>> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        write!(f, [self.object(), ".", self.property()])
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, JSXExpressionContainer<'a>> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        write!(f, ["{", self.expression(), "}"])
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, JSXEmptyExpression> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        Ok(())
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, JSXAttribute<'a>> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        write!(f, self.name())?;
-        if let Some(value) = &self.value() {
-            write!(f, ["=", value])?;
-        }
-        Ok(())
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, JSXSpreadAttribute<'a>> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        write!(f, ["{...", self.argument(), "}"])
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, JSXIdentifier<'a>> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        write!(f, dynamic_text(self.name().as_str()))
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, JSXSpreadChild<'a>> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        let expression = self.expression();
-        write!(f, ["{...", expression, "}"])
-    }
-}
-
-impl<'a> FormatWrite<'a> for AstNode<'a, JSXText<'a>> {
-    fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        write!(f, dynamic_text(self.value().as_str()))
     }
 }
 
@@ -1328,14 +1209,9 @@ impl<'a> FormatWrite<'a> for AstNode<'a, TSEnumBody<'a>> {
 impl<'a> Format<'a> for AstNode<'a, Vec<'a, TSEnumMember<'a>>> {
     fn fmt(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
         let trailing_separator = FormatTrailingCommas::ES5.trailing_separator(f.options());
-        let mut join = f.join_nodes_with_soft_line();
-        for formatted in FormatSeparatedIter::new(self.iter(), ",")
-            .with_trailing_separator(trailing_separator)
-            .nodes_grouped()
-        {
-            join.entry(formatted.element.span(), &formatted);
-        }
-        join.finish()
+        f.join_nodes_with_soft_line()
+            .entries_with_trailing_separator(self.iter(), ",", trailing_separator)
+            .finish()
     }
 }
 
@@ -1709,13 +1585,8 @@ impl<'a> FormatWrite<'a> for AstNode<'a, TSInterfaceDeclaration<'a>> {
 
 impl<'a> FormatWrite<'a> for AstNode<'a, TSInterfaceBody<'a>> {
     fn write(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        // let last_index = self.body.len().saturating_sub(1);
         let source_text = f.context().source_text();
-        let mut joiner = f.join_nodes_with_soft_line();
-        for (index, sig) in self.body().iter().enumerate() {
-            joiner.entry(sig.span(), sig);
-        }
-        joiner.finish()
+        f.join_nodes_with_soft_line().entries(self.body()).finish()
     }
 }
 
@@ -1741,13 +1612,7 @@ impl<'a> FormatWrite<'a> for AstNode<'a, TSPropertySignature<'a>> {
 
 impl<'a> Format<'a> for AstNode<'a, Vec<'a, TSSignature<'a>>> {
     fn fmt(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
-        let trailing_separator = FormatTrailingCommas::ES5.trailing_separator(f.options());
-        let source_text = f.source_text();
-        let mut join = f.join_nodes_with_soft_line();
-        for element in self {
-            join.entry(element.span(), element);
-        }
-        join.finish()
+        f.join_nodes_with_soft_line().entries(self).finish()
     }
 }
 
@@ -1856,10 +1721,7 @@ impl<'a> FormatWrite<'a> for AstNode<'a, TSIndexSignatureName<'a>> {
 impl<'a> Format<'a> for AstNode<'a, Vec<'a, TSInterfaceHeritage<'a>>> {
     fn fmt(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
         f.join_with(soft_line_break_or_space())
-            .entries(
-                FormatSeparatedIter::new(self.iter(), ",")
-                    .with_trailing_separator(TrailingSeparator::Disallowed),
-            )
+            .entries_with_trailing_separator(self.iter(), ",", TrailingSeparator::Disallowed)
             .finish()
     }
 }
