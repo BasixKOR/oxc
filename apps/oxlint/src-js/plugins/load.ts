@@ -4,7 +4,7 @@ import { getErrorMessage } from './utils.js';
 import type { AfterHook, BeforeHook, Visitor, VisitorWithHooks } from './types.ts';
 
 // Linter plugin, comprising multiple rules
-interface Plugin {
+export interface Plugin {
   meta: {
     name: string;
   };
@@ -16,7 +16,7 @@ interface Plugin {
 // Linter rule.
 // `Rule` can have either `create` method, or `createOnce` method.
 // If `createOnce` method is present, `create` is ignored.
-type Rule = CreateRule | CreateOnceRule;
+export type Rule = CreateRule | CreateOnceRule;
 
 interface CreateRule {
   create: (context: Context) => Visitor;
