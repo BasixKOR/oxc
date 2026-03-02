@@ -1,9 +1,9 @@
 import { format as napiFormat, jsTextToDoc as napiJsTextToDoc } from "./bindings";
 import {
   resolvePlugins,
+  formatFile,
   formatEmbeddedCode,
   formatEmbeddedDoc,
-  formatFile,
   sortTailwindClasses,
 } from "./libs/apis";
 import type { Options } from "prettier";
@@ -23,9 +23,9 @@ export async function format(fileName: string, sourceText: string, options?: For
     sourceText,
     options ?? {},
     resolvePlugins,
+    (options, code) => formatFile({ options, code }),
     (options, code) => formatEmbeddedCode({ options, code }),
     (options, texts) => formatEmbeddedDoc({ options, texts }),
-    (options, code) => formatFile({ options, code }),
     (options, classes) => sortTailwindClasses({ options, classes }),
   );
 }
@@ -45,9 +45,9 @@ export async function jsTextToDoc(
     oxfmtPluginOptionsJson,
     parentContext,
     resolvePlugins,
+    (_options, _code) => Promise.reject(/* Unreachable */),
     (options, code) => formatEmbeddedCode({ options, code }),
     (options, texts) => formatEmbeddedDoc({ options, texts }),
-    (_options, _code) => Promise.reject(/* Unreachable */),
     (options, classes) => sortTailwindClasses({ options, classes }),
   );
 }

@@ -1,9 +1,9 @@
 import Tinypool from "tinypool";
 import { resolvePlugins } from "../libs/apis";
 import type {
+  FormatFileParam,
   FormatEmbeddedCodeParam,
   FormatEmbeddedDocParam,
-  FormatFileParam,
   SortTailwindClassesArgs,
 } from "../libs/apis";
 
