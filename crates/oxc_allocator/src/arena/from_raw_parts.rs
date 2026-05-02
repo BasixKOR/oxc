@@ -69,6 +69,8 @@ impl<const MIN_ALIGN: usize> Arena<MIN_ALIGN> {
         // The footer is aligned on `CHUNK_ALIGN`, which is `>= MIN_ALIGN`, so this is already aligned to `MIN_ALIGN`.
         //
         // Set `is_fixed_size` to `true` so `Drop` impl for `Arena` will free the backing memory via `System` allocator.
+        // `is_fixed_size: true` also prevents the `Arena` from ever getting any further chunks
+        // (enforced in allocation slow path `try_alloc_layout_slow_impl`).
         // `Arena::reset` only resets the cursor pointer, and doesn't deallocate the chunk,
         // so `is_fixed_size` will remain permanently `true` for this `Arena`, even across `reset` calls.
         let cursor_ptr = chunk_footer_ptr.cast::<u8>();
@@ -84,12 +86,8 @@ impl<const MIN_ALIGN: usize> Arena<MIN_ALIGN> {
         // Therefore `chunk_footer_ptr` is valid for writing a `ChunkFooter`.
         unsafe { chunk_footer_ptr.write(chunk_footer) };
 
-        // Create `Arena` and set `can_grow` to `false`. This means that the memory chunk we've just created
-        // will remain its only chunk. Therefore it can never be deallocated, until the `Arena` is dropped.
-        // `Arena::reset` would only reset the "cursor" pointer, not deallocate the memory.
-        let mut arena = Self::new_impl(start_ptr, cursor_ptr, Some(chunk_footer_ptr));
-        arena.can_grow = false;
-        arena
+        // Create `Arena`
+        Self::new_impl(start_ptr, cursor_ptr, Some(chunk_footer_ptr))
     }
 
     /// Get the current cursor pointer for this [`Arena`]'s current chunk.

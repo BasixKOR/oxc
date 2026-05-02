@@ -170,6 +170,10 @@ mod tests_alloc;
 // `current_chunk_footer_ptr` is placed between the two hot pointers so they sit at offsets 0 and 16,
 // forcing LLVM to emit two independent 8-byte `ldr`s, each of which forwards cleanly.
 // More background here: https://eme64.github.io/blog/2024/06/24/Auto-Vectorization-and-Store-to-Load-Forwarding.html
+#[cfg_attr(
+    not(all(feature = "track_allocations", not(feature = "disable_track_allocations"))),
+    expect(clippy::struct_field_names)
+)]
 #[repr(C)]
 #[derive(Debug)]
 pub struct Arena<const MIN_ALIGN: usize = 1> {
@@ -201,9 +205,6 @@ pub struct Arena<const MIN_ALIGN: usize = 1> {
     ///
     /// This field is duplicated in `ChunkFooter`.
     start_ptr: Cell<NonNull<u8>>,
-
-    /// Whether this `Arena` is allowed to allocate additional chunks when the current one is full.
-    can_grow: bool,
 
     /// Used to track number of allocations made in this `Arena` when `track_allocations` feature is enabled.
     #[cfg(all(feature = "track_allocations", not(feature = "disable_track_allocations")))]
