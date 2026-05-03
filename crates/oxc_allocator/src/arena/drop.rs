@@ -98,7 +98,7 @@ unsafe fn dealloc_chunk_list(footer_ptr: Option<NonNull<ChunkFooter>>) {
     let mut next_footer_ptr = footer_ptr;
 
     while let Some(footer_ptr) = next_footer_ptr {
-        // Create `&ChunkFooter` reference to within a block, to ensure the reference is not live
+        // Create `&ChunkFooter` reference within a block, to ensure the reference is not live
         // when we deallocate the chunk's memory (which includes the `ChunkFooter`)
         {
             // SAFETY: `footer_ptr` always points to a valid `ChunkFooter`
@@ -115,7 +115,7 @@ unsafe fn dealloc_chunk_list(footer_ptr: Option<NonNull<ChunkFooter>>) {
 /// # SAFETY
 /// `footer_ptr` must point to a valid `ChunkFooter`.
 pub unsafe fn dealloc_arena_chunk(footer_ptr: NonNull<ChunkFooter>) {
-    // Create `&ChunkFooter` reference to within a block, to ensure the reference is not live
+    // Create `&ChunkFooter` reference within a block, to ensure the reference is not live
     // when we deallocate the chunk's memory (which includes the `ChunkFooter`)
     let (backing_alloc_ptr, layout, is_fixed_size) = {
         // SAFETY: Caller guarantees that `footer_ptr` points to a valid `ChunkFooter`
