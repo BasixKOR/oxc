@@ -64,7 +64,7 @@ declare_oxc_lint!(
     PreferArraySome,
     unicorn,
     pedantic,
-    fix,
+    suggestion,
     version = "0.0.18",
 );
 
@@ -85,7 +85,7 @@ impl Rule for PreferArraySome {
                     return;
                 }
 
-                ctx.diagnostic_with_fix(
+                ctx.diagnostic_with_suggestion(
                     over_method(
                         // SAFETY: `call_expr_method_callee_info` returns `Some` if `is_method_call` returns `true`.
                         call_expr_method_callee_info(call_expr).unwrap().0,
@@ -260,7 +260,7 @@ impl Rule for PreferArraySome {
                     return;
                 }
 
-                ctx.diagnostic_with_fix(
+                ctx.diagnostic_with_suggestion(
                     non_zero_filter(
                         // SAFETY: `call_expr_method_callee_info` returns `Some` if `is_method_call` returns `true`.
                         call_expr_method_callee_info(left_call_expr).unwrap().0,
