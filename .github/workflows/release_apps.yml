@@ -42,6 +42,7 @@ jobs:
           file-url: https://unpkg.com/oxlint@latest/package.json
 
       - name: Validate rule versions
+        if: steps.oxlint.outputs.version_changed == 'true'
         env:
           OXLINT_VERSION: ${{ steps.oxlint.outputs.version }}
         run: |
