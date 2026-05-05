@@ -249,9 +249,6 @@ impl TryFrom<Value> for LintOptions {
                     Some(&"all") => LintFixKindFlag::All,
                     _ => LintFixKindFlag::default(),
                 }),
-            #[cfg(not(test))]
-            rules_customization: None,
-            #[cfg(test)]
             rules_customization: object
                 .get("rulesCustomization")
                 .and_then(|key| RulesCustomization::deserialize(key).ok()),
