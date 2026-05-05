@@ -12,6 +12,8 @@ use oxc_linter::{
     AllowWarnDeny, DisableDirectives, Fix, FixKind, Message, PossibleFixes, RuleCommentType,
 };
 
+use crate::lsp::options::{RuleCustomizationSeverity, RulesCustomization};
+
 #[derive(Debug, Clone, Default)]
 pub struct DiagnosticReport {
     pub diagnostic: Diagnostic,
@@ -41,6 +43,38 @@ pub enum FixedContentKind {
     UnusedDirective,
 }
 
+impl RulesCustomization {
+    fn get_severity_for_rule(&self, code: &OxcCode) -> Option<RuleCustomizationSeverity> {
+        let rule_name = code.number.as_ref()?;
+        let scope = code.scope.as_ref()?;
+
+        if scope == "eslint" {
+            self.rules
+                .get(rule_name.as_ref())
+                .and_then(|customization| customization.severity.clone())
+        } else {
+            let lookup = format!("{scope}/{rule_name}");
+            self.rules.get(lookup.as_str()).and_then(|customization| customization.severity.clone())
+        }
+    }
+}
+
+impl TryFrom<RuleCustomizationSeverity> for DiagnosticSeverity {
+    type Error = &'static str;
+
+    fn try_from(value: RuleCustomizationSeverity) -> Result<Self, Self::Error> {
+        match value {
+            RuleCustomizationSeverity::Error => Ok(DiagnosticSeverity::ERROR),
+            RuleCustomizationSeverity::Warn => Ok(DiagnosticSeverity::WARNING),
+            RuleCustomizationSeverity::Hint => Ok(DiagnosticSeverity::HINT),
+            RuleCustomizationSeverity::Info => Ok(DiagnosticSeverity::INFORMATION),
+            RuleCustomizationSeverity::Off => Err(
+                "Off severity should not be converted to DiagnosticSeverity as it means the rule is disabled and should not produce diagnostics.",
+            ),
+        }
+    }
+}
+
 fn miette_severity_to_lsp_severity(value: Severity) -> DiagnosticSeverity {
     match value {
         Severity::Error => DiagnosticSeverity::ERROR,
@@ -56,8 +90,18 @@ pub fn message_to_lsp_diagnostic(
     uri: &Uri,
     source_text: &str,
     rope: &Rope,
-) -> DiagnosticReport {
-    let severity = miette_severity_to_lsp_severity(message.error.severity);
+    rules_customization: Option<&RulesCustomization>,
+) -> Option<DiagnosticReport> {
+    let severity = if let Some(rules_customization) = rules_customization {
+        if let Some(severity) = rules_customization.get_severity_for_rule(&message.error.code) {
+            // filter off rules early
+            DiagnosticSeverity::try_from(severity).ok()?
+        } else {
+            miette_severity_to_lsp_severity(message.error.severity)
+        }
+    } else {
+        miette_severity_to_lsp_severity(message.error.severity)
+    };
 
     let related_information = message.error.labels.as_ref().map(|spans| {
         spans
@@ -165,10 +209,10 @@ pub fn message_to_lsp_diagnostic(
     // and attaching a ignore comment would not ignore the error.
     // This is because the ignore comment would need to be placed before the error offset, which is not possible.
     if error_offset == section_offset && message.span.end == section_offset {
-        return DiagnosticReport {
+        return Some(DiagnosticReport {
             diagnostic,
             code_action: Some(LinterCodeAction { range, fixed_content }),
-        };
+        });
     }
 
     add_ignore_fixes(
@@ -186,7 +230,7 @@ pub fn message_to_lsp_diagnostic(
         Some(LinterCodeAction { range, fixed_content })
     };
 
-    DiagnosticReport { diagnostic, code_action }
+    Some(DiagnosticReport { diagnostic, code_action })
 }
 
 fn fix_to_fixed_content(

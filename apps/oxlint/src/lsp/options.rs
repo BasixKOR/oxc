@@ -136,7 +136,7 @@ impl<'de> Deserialize<'de> for RulesCustomization {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum RuleCustomizationSeverity {
     Error,
