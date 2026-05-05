@@ -12,6 +12,12 @@ impl<'de> Deserialize<'de> for GlobSet {
 }
 
 impl GlobSet {
+    /// Returns `true` when the glob set has no patterns.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     pub fn new<S: AsRef<str>, I: IntoIterator<Item = S>>(patterns: I) -> Self {
         Self(
             patterns

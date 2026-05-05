@@ -86,6 +86,16 @@ pub struct OxlintOverride {
     /// `[ "*.test.ts", "*.spec.ts" ]`
     pub files: GlobSet,
 
+    /// A list of glob patterns to exclude from this override.
+    ///
+    /// Files matching these patterns are not globally ignored; this override
+    /// simply does not apply to them.
+    ///
+    /// ## Example
+    /// `[ "*.generated.ts", "fixtures/**" ]`
+    #[serde(default, skip_serializing_if = "GlobSet::is_empty")]
+    pub ignores: GlobSet,
+
     /// Environments enable and disable collections of global variables.
     pub env: Option<OxlintEnv>,
 
@@ -139,6 +149,18 @@ mod test {
         }))
         .unwrap();
         assert_eq!(config.plugins, Some(LintPlugins::REACT | LintPlugins::TYPESCRIPT));
+    }
+
+    #[test]
+    fn test_parsing_ignores() {
+        let config: OxlintOverride = from_value(json!({
+            "files": ["*.tsx"],
+            "ignores": ["*.generated.tsx"],
+        }))
+        .unwrap();
+
+        assert!(config.ignores.is_match("App.generated.tsx"));
+        assert!(!config.ignores.is_match("App.tsx"));
     }
 
     #[test]
