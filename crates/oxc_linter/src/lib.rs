@@ -631,11 +631,25 @@ impl Linter {
             program.source_text = source_text;
         }
 
+        // If partial source (Vue/Astro/Svelte), trim the leading newline after `<script>`
+        let is_partial = !has_bom && ctx_host.current_sub_host().source_text_offset() > 0;
+        let trim_leading = match source_text.as_bytes() {
+            [b'\r', b'\n', ..] if is_partial => 2u32,
+            [b'\n', ..] if is_partial => 1,
+            _ => 0,
+        };
+        if trim_leading > 0 {
+            source_text = &source_text[trim_leading as usize..];
+            program.source_text = source_text;
+        }
+
         // Create span converter.
         // If source starts with BOM, create converter which ignores the BOM.
         let span_converter = if has_bom {
             #[expect(clippy::cast_possible_truncation)]
             Utf8ToUtf16::new_with_offset(source_text, BOM_LEN as u32)
+        } else if trim_leading > 0 {
+            Utf8ToUtf16::new_with_offset(source_text, trim_leading)
         } else {
             Utf8ToUtf16::new(source_text)
         };
