@@ -12,7 +12,10 @@ use oxc_linter::{
     AllowWarnDeny, DisableDirectives, Fix, FixKind, Message, PossibleFixes, RuleCommentType,
 };
 
-use crate::lsp::options::{RuleCustomizationSeverity, RulesCustomization};
+use crate::lsp::{
+    options::{RuleCustomizationSeverity, RulesCustomization},
+    utils::get_full_rule_name,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct DiagnosticReport {
@@ -37,7 +40,7 @@ pub struct FixedContent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FixedContentKind {
-    LintRule,
+    LintRule(OxcCode),
     IgnoreLintRuleLine,
     IgnoreLintRuleSection,
     UnusedDirective,
@@ -45,17 +48,8 @@ pub enum FixedContentKind {
 
 impl RulesCustomization {
     fn get_severity_for_rule(&self, code: &OxcCode) -> Option<RuleCustomizationSeverity> {
-        let rule_name = code.number.as_ref()?;
-        let scope = code.scope.as_ref()?;
-
-        if scope == "eslint" {
-            self.rules
-                .get(rule_name.as_ref())
-                .and_then(|customization| customization.severity.clone())
-        } else {
-            let lookup = format!("{scope}/{rule_name}");
-            self.rules.get(lookup.as_str()).and_then(|customization| customization.severity.clone())
-        }
+        let lookup = get_full_rule_name(code)?;
+        self.rules.get(lookup.as_ref()).and_then(|customization| customization.severity.clone())
     }
 }
 
@@ -188,7 +182,7 @@ pub fn message_to_lsp_diagnostic(
                 &fix,
                 rope,
                 source_text,
-                FixedContentKind::LintRule,
+                FixedContentKind::LintRule(message.error.code.clone()),
             ));
         }
         PossibleFixes::Multiple(fixes) => {
@@ -196,7 +190,12 @@ pub fn message_to_lsp_diagnostic(
                 if fix.message.is_none() {
                     fix.message = Some(alternative_fix_title.clone());
                 }
-                fix_to_fixed_content(&fix, rope, source_text, FixedContentKind::LintRule)
+                fix_to_fixed_content(
+                    &fix,
+                    rope,
+                    source_text,
+                    FixedContentKind::LintRule(message.error.code.clone()),
+                )
             }));
         }
     }
@@ -425,33 +424,18 @@ fn add_ignore_fixes(
         "Unused disable directives should never pass pass this point, as they should be handled separately in `create_unused_directives_messages`."
     );
 
-    if let Some(rule_name) = code.number.as_ref() {
-        // this conversion is a bit messy, but basically we need to reconstruct the rule name with plugin prefix
-        let rule_name_with_plugin = if let Some(scope) = &code.scope
-            && !scope.is_empty()
-            // eslint does not has a plugin prefix
-            && scope != "eslint"
-        {
-            format!("{scope}/{rule_name}")
-        } else {
-            rule_name.to_string()
-        };
-
-        // TODO: doesn't support disabling multiple rules by name for a given line.
-        fixes.push(disable_for_this_line(
-            &rule_name_with_plugin,
-            error_offset,
-            section_offset,
-            rope,
-            source_text,
-        ));
-        fixes.push(disable_for_this_section(
-            &rule_name_with_plugin,
-            section_offset,
-            rope,
-            source_text,
-        ));
-    }
+    let Some(rule_name_with_plugin) = get_full_rule_name(code) else {
+        return;
+    };
+    // TODO: doesn't support disabling multiple rules by name for a given line.
+    fixes.push(disable_for_this_line(
+        &rule_name_with_plugin,
+        error_offset,
+        section_offset,
+        rope,
+        source_text,
+    ));
+    fixes.push(disable_for_this_section(&rule_name_with_plugin, section_offset, rope, source_text));
 }
 
 fn disable_for_this_line(

@@ -601,7 +601,11 @@ impl Tool for ServerLinter {
         for kind in applying_kinds {
             // `CODE_ACTION_KIND_SOURCE_FIX_ALL_OXC` was filtered out by `applying_kinds`, so we don't need to check it here.
             if kind == CodeActionKind::SOURCE_FIX_ALL {
-                let Some(fix_all) = apply_all_fix_code_action(actions.clone(), uri.clone()) else {
+                let Some(fix_all) = apply_all_fix_code_action(
+                    actions.clone(),
+                    uri.clone(),
+                    self.rules_customization.as_ref(),
+                ) else {
                     continue;
                 };
                 code_actions_vec.push(CodeActionOrCommand::CodeAction(fix_all));
@@ -612,8 +616,11 @@ impl Tool for ServerLinter {
                     );
                     continue;
                 }
-                let Some(fix_all) = apply_dangerous_fix_code_action(actions.clone(), uri.clone())
-                else {
+                let Some(fix_all) = apply_dangerous_fix_code_action(
+                    actions.clone(),
+                    uri.clone(),
+                    self.rules_customization.as_ref(),
+                ) else {
                     continue;
                 };
                 code_actions_vec.push(CodeActionOrCommand::CodeAction(fix_all));
@@ -1477,6 +1484,21 @@ mod test {
                     },
                     "no-console": {
                         "severity": "off"
+                    }
+                }
+            }),
+        );
+        tester.test_and_snapshot_single_file("test.ts");
+    }
+
+    #[test]
+    fn test_rules_customization_autofix() {
+        let tester = Tester::new(
+            "fixtures/lsp/rules_customization/autofix",
+            json!({
+                "rulesCustomization": {
+                    "no-debugger": {
+                        "autofix": false
                     }
                 }
             }),
