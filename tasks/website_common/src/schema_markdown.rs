@@ -519,12 +519,14 @@ impl Renderer {
 impl Root {
     fn sanitize(&mut self) {
         sanitize(&mut self.title);
+        self.sections.iter_mut().for_each(Section::sanitize);
     }
 }
 
 impl Section {
     fn sanitize(&mut self) {
         sanitize(&mut self.description);
+        self.sections.iter_mut().for_each(Section::sanitize);
     }
 }
 
