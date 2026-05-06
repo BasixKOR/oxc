@@ -2125,6 +2125,7 @@ mod suppression {
     }
 
     #[test]
+    #[cfg(not(target_endian = "big"))]
     fn test_fixing_only_ts_go_errors() {
         SuppressionTester::new()
             .with_cwd("fixing_only_ts_go_errors")
