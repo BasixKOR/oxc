@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// A set of glob patterns.
-#[derive(Debug, Default, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, JsonSchema)]
 pub struct GlobSet(Vec<String>);
 
 impl<'de> Deserialize<'de> for GlobSet {
