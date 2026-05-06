@@ -7,10 +7,11 @@ use rustc_hash::FxHashSet;
 use schemars::{JsonSchema, r#gen, schema::Schema};
 use serde::{Deserialize, Serialize};
 
+use oxc_config::GlobSet;
+
 use crate::{LintPlugins, OxlintEnv, OxlintGlobals, config::OxlintRules};
 
 use super::external_plugins::{ExternalPluginEntry, external_plugins_schema};
-use super::glob_set::GlobSet;
 
 // nominal wrapper required to add JsonSchema impl
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
