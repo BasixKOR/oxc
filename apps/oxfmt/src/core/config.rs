@@ -9,9 +9,7 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde_json::Value;
 use tracing::instrument;
 
-use oxc_config_discovery::{
-    ConfigDiscovery, ConfigFileNames, DiscoveredConfigFile, is_js_config_path,
-};
+use oxc_config::{ConfigDiscovery, ConfigFileNames, DiscoveredConfigFile, is_js_config_path};
 #[cfg(feature = "napi")]
 use oxc_formatter::FormatOptions;
 
