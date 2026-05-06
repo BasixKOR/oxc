@@ -519,10 +519,11 @@ impl DisableDirectivesBuilder {
             let comment_fix_span = Self::compute_comment_fix_span(comment, source_text);
             let text_source = comment_span.source_text(source_text);
             let text = text_source.trim_start();
-            let mut rule_name_start = comment_span.start + (text_source.len() - text.len()) as u32;
+            let directive_start = comment_span.start + (text_source.len() - text.len()) as u32;
 
             if let Some((directive_prefix, text)) = self.match_disable_directive(text) {
-                rule_name_start += directive_prefix.disable_directive_name().len() as u32;
+                let mut rule_name_start =
+                    directive_start + directive_prefix.disable_directive_name().len() as u32;
                 // `eslint-disable`
                 if text.trim().is_empty() {
                     if self.disable_all_start.is_none() {
@@ -542,8 +543,10 @@ impl DisableDirectivesBuilder {
                     continue;
                 }
                 // `eslint-disable-next-line`
-                else if let Some(text) = text.strip_prefix("-next-line") {
-                    rule_name_start += 10; // -next-line is 10 bytes
+                else if let Some(text) = text.strip_prefix("-next-line")
+                    && (text.is_empty() || text.starts_with(char::is_whitespace))
+                {
+                    rule_name_start += "-next-line".len() as u32;
                     // Get the span up to the next new line
                     let mut stop = comment_span.end;
                     let mut lines_after_comment_end =
@@ -578,7 +581,8 @@ impl DisableDirectivesBuilder {
                     } else {
                         // `eslint-disable-next-line rule_name1, rule_name2`
                         let mut rules = vec![];
-                        Self::get_rule_names(text, rule_name_start, |rule_name, name_span| {
+                        Self::get_rule_names(text, |rule_name, name_span| {
+                            let name_span = name_span.move_right(rule_name_start);
                             self.add_interval(
                                 comment_span.end,
                                 stop,
@@ -608,8 +612,7 @@ impl DisableDirectivesBuilder {
                 }
                 // `eslint-disable-line`
                 else if let Some(text) = text.strip_prefix("-line") {
-                    rule_name_start += 5; // -line is 5 bytes
-
+                    rule_name_start += "-line".len() as u32;
                     // Get the span between the preceding newline to this comment
                     let start = source_text[..comment_span.start as usize]
                         .lines()
@@ -638,7 +641,8 @@ impl DisableDirectivesBuilder {
                     } else {
                         // `eslint-disable-line rule-name1, rule-name2`
                         let mut rules = vec![];
-                        Self::get_rule_names(text, rule_name_start, |rule_name, name_span| {
+                        Self::get_rule_names(text, |rule_name, name_span| {
+                            let name_span = name_span.move_right(rule_name_start);
                             self.add_interval(
                                 start,
                                 stop,
@@ -671,7 +675,9 @@ impl DisableDirectivesBuilder {
                 else if text.starts_with(char::is_whitespace) {
                     // `eslint-disable rule-name1, rule-name2`
                     let mut rules = vec![];
-                    Self::get_rule_names(text, rule_name_start, |rule_name, name_span| {
+                    let rule_list_start = comment_span.end - text.len() as u32;
+                    Self::get_rule_names(text, |rule_name, name_span| {
+                        let name_span = name_span.move_right(rule_list_start);
                         self.disable_start_map.entry(rule_name.to_string()).or_insert((
                             comment_span.end,
                             directive_prefix,
@@ -696,7 +702,6 @@ impl DisableDirectivesBuilder {
             }
 
             if let Some((directive_prefix, text)) = self.match_enable_directive(text) {
-                rule_name_start += directive_prefix.enable_directive_name().len() as u32;
                 // `eslint-enable`
                 if text.trim().is_empty() {
                     if let Some((start, disable_prefix, _, _)) = self.disable_all_start.take() {
@@ -716,7 +721,9 @@ impl DisableDirectivesBuilder {
                     }
                 } else if text.starts_with(char::is_whitespace) {
                     // `eslint-enable rule-name1, rule-name2`
-                    Self::get_rule_names(text, rule_name_start, |rule_name, name_span| {
+                    let rule_list_start = comment_span.end - text.len() as u32;
+                    Self::get_rule_names(text, |rule_name, name_span| {
+                        let name_span = name_span.move_right(rule_list_start);
                         if let Some((start, disable_prefix, _, _, _)) =
                             self.disable_start_map.remove(rule_name)
                         {
@@ -800,9 +807,9 @@ impl DisableDirectivesBuilder {
     }
 
     #[expect(clippy::cast_possible_truncation)] // for `as u32`
-    fn get_rule_names<F: FnMut(&str, Span)>(text: &str, rule_name_start: u32, mut cb: F) {
+    fn get_rule_names<F: FnMut(&str, Span)>(text: &str, mut cb: F) {
         if let Some(text) = text.split_terminator("--").next() {
-            let mut rule_name_start: u32 = rule_name_start;
+            let mut rule_name_start: u32 = 0;
 
             for part in text.split(',') {
                 let trimmed = part.trim();
