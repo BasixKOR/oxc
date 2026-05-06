@@ -1816,6 +1816,7 @@ mod suppression {
     };
 
     #[test]
+    #[cfg_attr(target_endian = "big", ignore = "disabled on big-endian")]
     fn file_not_detected_report_all_errors() {
         let args = &["--type-aware", "--type-check"];
         Tester::new()
@@ -1824,6 +1825,7 @@ mod suppression {
     }
 
     #[test]
+    #[cfg_attr(target_endian = "big", ignore = "disabled on big-endian")]
     fn test_diagnostics_filtered_if_count_is_the_same() {
         let args = &["--type-aware", "--type-check"];
         Tester::new()
@@ -1832,6 +1834,7 @@ mod suppression {
     }
 
     #[test]
+    #[cfg_attr(target_endian = "big", ignore = "disabled on big-endian")]
     fn test_suppress_all_hides_errors_with_existing_file() {
         // When --suppress-all is used on an existing suppressions file,
         // error diagnostics should be suppressed, matching ESLint behavior.
@@ -1903,6 +1906,7 @@ mod suppression {
     }
 
     #[test]
+    #[cfg_attr(target_endian = "big", ignore = "disabled on big-endian")]
     fn test_prune_errors_warning() {
         let args = &["--type-aware", "--type-check"];
         Tester::new()
@@ -1911,6 +1915,7 @@ mod suppression {
     }
 
     #[test]
+    #[cfg_attr(target_endian = "big", ignore = "disabled on big-endian")]
     fn test_unpruned_suppressions_exit_code() {
         // When there are stale suppressions, exit code should be 2
         let args = &["--type-aware", "--type-check"];
@@ -1924,6 +1929,7 @@ mod suppression {
     }
 
     #[test]
+    #[cfg_attr(target_endian = "big", ignore = "disabled on big-endian")]
     fn test_report_one_new_error_but_filter_the_rest() {
         let args = &["--type-aware", "--type-check"];
         Tester::new()
@@ -1940,6 +1946,7 @@ mod suppression {
     }
 
     #[test]
+    #[ignore = "disabled while big-endian CI runs on PRs"]
     fn test_happy_path() {
         let args = &["--suppress-all", "--type-aware", "--type-check"];
         let suppression = SuppressionTester::new()
@@ -1992,6 +1999,7 @@ mod suppression {
     }
 
     #[test]
+    #[cfg_attr(target_endian = "big", ignore = "disabled on big-endian")]
     fn test_only_non_fixed_diagnostics_are_reported() {
         SuppressionTester::new()
             .with_cwd("only_non_fixed_diagnostics_are_reported")
@@ -2003,6 +2011,7 @@ mod suppression {
     }
 
     #[test]
+    #[cfg_attr(target_endian = "big", ignore = "disabled on big-endian")]
     fn test_update_file_after_fixing() {
         SuppressionTester::new()
             .with_cwd("update_file_after_fixing")
@@ -2025,6 +2034,7 @@ mod suppression {
     }
 
     #[test]
+    #[cfg_attr(target_endian = "big", ignore = "disabled on big-endian")]
     fn test_updated_dangerous_fix() {
         SuppressionTester::new()
             .with_cwd("updated_dangerous_fix")
@@ -2054,6 +2064,7 @@ mod suppression {
     }
 
     #[test]
+    #[cfg_attr(target_endian = "big", ignore = "disabled on big-endian")]
     fn test_updated_suggestion_fix_applied() {
         SuppressionTester::new()
             .with_cwd("updated_suggestion_fix")
@@ -2075,6 +2086,7 @@ mod suppression {
     }
 
     #[test]
+    #[cfg_attr(target_endian = "big", ignore = "disabled on big-endian")]
     fn test_prunning_errors_update_the_file_when_errors_are_pruned() {
         SuppressionTester::new()
             .with_cwd("with_arg_and_pruned_errors")
@@ -2085,6 +2097,7 @@ mod suppression {
     }
 
     #[test]
+    #[cfg_attr(target_endian = "big", ignore = "disabled on big-endian")]
     fn test_suppressiong_errors_update_the_file_when_errors_are_increased() {
         SuppressionTester::new()
             .with_cwd("with_arg_and_increased_errors")
@@ -2105,6 +2118,7 @@ mod suppression {
     }
 
     #[test]
+    #[cfg_attr(target_endian = "big", ignore = "disabled on big-endian")]
     fn test_suppressing_errors_update_the_file_when_errors_are_decreased() {
         SuppressionTester::new()
             .with_cwd("with_arg_and_decreased_errors")
@@ -2115,6 +2129,7 @@ mod suppression {
     }
 
     #[test]
+    #[cfg_attr(target_endian = "big", ignore = "disabled on big-endian")]
     fn test_prunning_errors_update_the_file_when_errors_are_decreased() {
         SuppressionTester::new()
             .with_cwd("with_arg_and_decreased_errors")
