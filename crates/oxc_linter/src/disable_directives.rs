@@ -714,7 +714,7 @@ impl DisableDirectivesBuilder {
                         // collect as unused enable (see more at note comments in beginning of this method)
                         unused_enable_directives.push((directive_prefix, None, comment_span));
                     }
-                } else {
+                } else if text.starts_with(char::is_whitespace) {
                     // `eslint-enable rule-name1, rule-name2`
                     Self::get_rule_names(text, rule_name_start, |rule_name, name_span| {
                         if let Some((start, disable_prefix, _, _, _)) =
@@ -1045,7 +1045,14 @@ no-debugger
                 /* {prefix}-disable , ,no-debugger, , */
                 debugger;
             "),
-            format!("debugger;//{prefix}-disable-line")
+            format!("debugger;//{prefix}-disable-line"),
+            format!("
+            /* {prefix}-disable no-debugger, no-console */
+                debugger;
+            /* {prefix}-enablefoo, no-debugger, no-console */
+                debugger;
+            "
+            )
         ];
 
         let fail = vec![
